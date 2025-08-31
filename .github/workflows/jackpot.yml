@@ -21,7 +21,7 @@ jobs:
 
       # Install dependencies
       - name: Install dependencies
-        run: pip install -r requirements.txt openai pandas
+        run: pip install -r requirements.txt
 
       # Generate portfolio CSV via GPT
       - name: Generate portfolio CSV via ChatGPT
@@ -51,6 +51,7 @@ jobs:
           else
             echo "No signals generated."
           fi
+
 
 
 
