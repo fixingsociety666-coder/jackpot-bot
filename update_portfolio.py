@@ -3,7 +3,7 @@ import requests
 from bs4 import BeautifulSoup
 import time
 
-CSV_FILE = "sample_portfolio.csv"
+CSV_FILE = "./sample_portfolio.csv"
 NUM_PENNY = 100
 NUM_CONSISTENT = 50
 
