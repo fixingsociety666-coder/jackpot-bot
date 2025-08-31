@@ -1,10 +1,9 @@
 name: Jackpot Bot
 
 on:
+  workflow_dispatch:       # manual trigger
   schedule:
-    # Runs at 6 AM through 9 PM every hour
-    - cron: '0 6-21 * * *'
-  workflow_dispatch:
+    - cron: '0 6-21 * * 1-5'  # hourly from 6AM to 9PM, Monday=1 to Friday=5
 
 jobs:
   run-bot:
@@ -18,7 +17,7 @@ jobs:
 
     steps:
       - uses: actions/checkout@v3
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
