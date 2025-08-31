@@ -45,7 +45,11 @@ jobs:
         run: |
           if [ -f signals/signals.csv ]; then
             echo "----- Jackpot Bot Signals -----"
-            cat signa
+            cat signals/signals.csv
+          else
+            echo "No signals generated."
+          fi
+
 
 
 
