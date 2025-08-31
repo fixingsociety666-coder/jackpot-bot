@@ -6,3 +6,4 @@ lxml
 textblob
 nltk
 python-telegram-bot==13.7
+feedparser
