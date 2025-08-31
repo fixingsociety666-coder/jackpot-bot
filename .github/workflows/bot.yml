@@ -2,7 +2,7 @@ name: Jackpot Bot
 
 on:
   schedule:
-    - cron: '0 6-21 * * 1-5' # Every hour 6 AM–9 PM, Mon–Fri
+    - cron: '0 6-21 * * 1-5' # Every hour 6 AM–9 PM Mon–Fri
   workflow_dispatch: # Manual trigger
 
 jobs:
@@ -15,7 +15,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: 3.11  # or 3.14 when available
+          python-version: 3.11
 
       - name: Install dependencies
         run: |
