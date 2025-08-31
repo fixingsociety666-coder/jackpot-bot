@@ -1,8 +1,8 @@
 import os
 import requests
 import pandas as pd
-from bs4 import BeautifulSoup
 import feedparser
+from bs4 import BeautifulSoup
 from telegram import Bot
 from datetime import datetime
 from polygon import RESTClient
@@ -102,6 +102,9 @@ FINANCIAL_SITES = [
     "https://www.fool.com/market-outlook/",
     "https://seekingalpha.com/market-news",
     "https://www.marketwatch.com/latest-news",
+    "https://www.barrons.com/market-data",
+    "https://www.barchart.com/stocks",
+    "https://www.tipsranks.com/stocks"
 ]
 
 def scrape_stock_recommendations():
@@ -122,14 +125,15 @@ def scrape_stock_recommendations():
 # ----------------------------
 # Simple sentiment filter
 # ----------------------------
+STRONG_BUY_KEYWORDS = ["breakthrough", "all-time high", "record", "strong buy", "major acquisition", "product launch", "positive earnings"]
+BUY_KEYWORDS = ["gain", "uptrend", "buy", "bullish", "rally"]
+
 def analyze_sentiment(text):
     text_lower = text.lower()
-    if any(word in text_lower for word in ["breakthrough", "all-time high", "record", "strong buy"]):
+    if any(word in text_lower for word in STRONG_BUY_KEYWORDS):
         return "strong_buy"
-    elif any(word in text_lower for word in ["gain", "uptrend", "buy"]):
+    elif any(word in text_lower for word in BUY_KEYWORDS):
         return "buy"
-    elif any(word in text_lower for word in ["loss", "downtrend", "sell"]):
-        return "sell"
     else:
         return "hold"
 
@@ -137,7 +141,6 @@ def analyze_sentiment(text):
 # Generate signals
 # ----------------------------
 def check_signals():
-    # Telegram start message
     send_telegram_message("✅ Jackpot Bot started successfully!")
 
     token = get_questrade_access_token()
@@ -149,9 +152,7 @@ def check_signals():
         price = get_stock_price(ticker)
         if not price:
             continue
-
         avg_price = pos.get("averageEntryPrice", 0)
-        # Exit at 20% profit or 10% stop-loss
         if price >= avg_price * 1.2:
             send_telegram_message(f"📈 Exit Alert: {ticker} reached +20% (Price: {price}). Consider selling.")
         elif price <= avg_price * 0.9:
@@ -169,11 +170,17 @@ def check_signals():
     for sig in website_signals:
         sentiment = analyze_sentiment(sig["title"])
         if sentiment in ["strong_buy", "buy"]:
-            send_telegram_message(f"💹 Website Signal ({sentiment.upper()}) from {sig['source']}:\n{sig['title']}\n{sig['link']}")
+            ticker = sig["title"].split()[0]  # crude extraction
+            price = get_stock_price(ticker) or 0
+            take_profit = round(price * 1.2, 2)
+            stop_loss = round(price * 0.9, 2)
+            send_telegram_message(
+                f"💹 Website Signal ({sentiment.upper()}) from {sig['source']}:\n"
+                f"{sig['title']}\n{sig['link']}\nPrice: {price}, TP: {take_profit}, SL: {stop_loss}"
+            )
 
 # ----------------------------
 # Main
 # ----------------------------
 if __name__ == "__main__":
     check_signals()
-
