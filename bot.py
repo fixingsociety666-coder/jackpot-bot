@@ -1,55 +1,69 @@
 import os
-import requests
-from telegram import Bot
-from sentiment import analyze_sentiment
-import feedparser
 import yfinance as yf
-from datetime import datetime
+import requests
+from bs4 import BeautifulSoup
+import pandas as pd
+import feedparser
+from sentiment import analyze_sentiment
+from telegram import Bot
 
-# Telegram
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+# Load environment variables
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+POLYGON_API_KEY = os.getenv("POLYGON_API_KEY")
+
 bot = Bot(token=TELEGRAM_TOKEN)
 
-# News sources RSS feeds
-NEWS_SOURCES = {
-    "Motley Fool": "https://www.fool.com/rss/foolfeed.aspx",
-    "Seeking Alpha": "https://seekingalpha.com/market-news.xml",
-    "MarketWatch": "https://www.marketwatch.com/rss/topstories",
-    "Barchart": "https://www.barchart.com/rss/top-stocks",
-    "TipsRank": "https://www.tipranks.com/rss/stocks",
-    "Barrons": "https://www.barrons.com/xml/rss/market-highlights.xml"
+# Example portfolio tickers (replace with your CSV reading if needed)
+portfolio_tickers = ["AAPL", "TSLA", "AMZN"]
+
+# Example news sources (URLs)
+news_sources = {
+    "Seeking Alpha": "https://seekingalpha.com/market-news",
+    "Motley Fool": "https://www.fool.com/investing/",
+    "MarketWatch": "https://www.marketwatch.com/latest-news",
+    "Yahoo Finance": "https://finance.yahoo.com/topic/stock-market-news",
+    # Add more sources if needed
 }
 
-def get_news():
-    signals = []
-    for source, url in NEWS_SOURCES.items():
-        feed = feedparser.parse(url)
-        for entry in feed.entries[:5]:  # last 5 articles
-            title = entry.title
-            link = entry.link
-            sentiment_score = analyze_sentiment(title)
-            # Generate TP/SL (placeholder logic, can be enhanced)
-            tp = round(sentiment_score * 1.1, 2)
-            sl = round(sentiment_score * 0.9, 2)
-            signals.append({
-                "source": source,
-                "title": title,
-                "link": link,
-                "tp": tp,
-                "sl": sl,
-                "score": sentiment_score
-            })
-    return signals
+def fetch_stock_data(ticker):
+    data = yf.Ticker(ticker).info
+    current_price = data.get("regularMarketPrice", 0)
+    return current_price
 
-def send_telegram(signals):
-    for s in signals:
-        message = f"💹 {s['source']} Signal:\nTitle: {s['title']}\nLink: {s['link']}\nTP: {s['tp']}, SL: {s['sl']}, Score: {s['score']}"
-        bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+def calculate_tp_sl(price):
+    # Example: TP 5% above, SL 3% below
+    tp = round(price * 1.05, 2)
+    sl = round(price * 0.97, 2)
+    return tp, sl
 
-if __name__ == "__main__":
-    signals = get_news()
-    if signals:
-        send_telegram(signals)
-    else:
-        bot.send_message(chat_id=TELEGRAM_CHAT_ID, text="No new signals found at this time.")
+def scrape_news(url):
+    headlines = []
+    try:
+        r = requests.get(url, timeout=10)
+        soup = BeautifulSoup(r.text, "html.parser")
+        for item in soup.find_all(["a", "h3"]):
+            text = item.get_text(strip=True)
+            if text:
+                headlines.append(text)
+    except:
+        pass
+    return headlines
+
+def send_signal(ticker, source, price, tp, sl, headline):
+    message = f"💹 {source} Signal (BUY) for {ticker}:\n"
+    message += f"{headline}\nPrice: {price}, TP: {tp}, SL: {sl}"
+    bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+
+# Process portfolio
+for ticker in portfolio_tickers:
+    price = fetch_stock_data(ticker)
+    if price == 0:
+        continue
+    tp, sl = calculate_tp_sl(price)
+    for source, url in news_sources.items():
+        headlines = scrape_news(url)
+        for headline in headlines[:3]:  # Top 3 headlines per source
+            sentiment = analyze_sentiment(headline)
+            # Send all signals regardless of threshold
+            send_signal(ticker, source, price, tp, sl, headline)
