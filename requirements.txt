@@ -1,9 +1,26 @@
+# Data manipulation
 pandas
 numpy
+
+# Web requests & scraping
 requests
 beautifulsoup4
 lxml
+feedparser
+html5lib
+
+# Finance & stock APIs
+yfinance
+polygon-api-client
+
+# Sentiment analysis
 textblob
 nltk
+vaderSentiment
+
+# Telegram bot
 python-telegram-bot==13.7
-feedparser
+
+# Optional utilities
+schedule
+python-dotenv
