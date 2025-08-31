@@ -2,7 +2,8 @@ name: Jackpot Bot
 
 on:
   schedule:
-    - cron: '0 * * * *'  # runs every hour
+    # Runs at 6 AM through 9 PM every hour
+    - cron: '0 6-21 * * *'
   workflow_dispatch:
 
 jobs:
@@ -25,5 +26,5 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-      - name: Run bot
+      - name: Run Jackpot Bot
         run: python bot.py
