@@ -1,34 +1,41 @@
-import os, json, requests
+import os
 import pandas as pd
-from datetime import date
-import yaml
+import numpy as np
+from datetime import datetime
 
-with open("config.yml") as f:
-    cfg = yaml.safe_load(f)
+# Load portfolio (example CSV with tickers)
+portfolio_file = "sample_portfolio.csv"
+if os.path.exists(portfolio_file):
+    df = pd.read_csv(portfolio_file)
+else:
+    df = pd.DataFrame({"Ticker": ["AAPL", "MSFT", "TSLA"]})
 
-def send_telegram(msg):
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID")
-    if not token or not chat_id: return
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    requests.post(url, data={"chat_id":chat_id,"text":msg,"parse_mode":"Markdown"})
+signals = []
 
-signals = {}
-for t in cfg["stock_universe"]:
-    score = round(pd.np.random.rand(),2)
-    color = "GREEN" if score>=cfg["signals"]["strong_buy"] else "YELLOW" if score>=cfg["signals"]["weak_buy"] else "RED"
-    signals[t] = {"ticker":t,"close":100,"score":score,"color":color,"confidence":int(score*100),"market":"stocks","rationale":"Simulated signal."}
+for ticker in df["Ticker"]:
+    # Generate random score for demo (replace later with real API logic)
+    score = round(np.random.rand(), 2)   # ✅ FIXED: use numpy directly
+    action = "BUY" if score > 0.7 else "SELL" if score < 0.3 else "HOLD"
+    signals.append({"Ticker": ticker, "Score": score, "Action": action})
 
-for c in cfg["crypto_universe"]:
-    score = round(pd.np.random.rand(),2)
-    color = "GREEN" if score>=cfg["signals"]["strong_buy"] else "YELLOW" if score>=cfg["signals"]["weak_buy"] else "RED"
-    signals[c] = {"ticker":c,"close":1000,"score":score,"color":color,"confidence":int(score*100),"market":"crypto","rationale":"Simulated crypto signal."}
+signals_df = pd.DataFrame(signals)
+print("Generated Signals:")
+print(signals_df)
 
+# Save signals to file
 os.makedirs("signals", exist_ok=True)
-today = str(date.today())
-with open(f"signals/{today}.json","w") as f:
-    json.dump(signals,f,indent=2)
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+signals_file = f"signals/signals_{timestamp}.csv"
+signals_df.to_csv(signals_file, index=False)
 
-for s in signals.values():
-    if s["color"]=="GREEN":
-        send_telegram(f"🚀 {s['ticker']} {s['market'].upper()} GREEN Signal ({s['confidence']}%)")
+print(f"Signals saved to {signals_file}")
+
+# Telegram alert (optional, only if secrets are set)
+import requests
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
+if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+    message = "📈 Jackpot Bot Signals:\n\n" + signals_df.to_string(index=False)
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": message})
