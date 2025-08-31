@@ -1,0 +1,5 @@
+yfinance==0.2.44
+pandas==2.1.1
+python-telegram-bot==23.15
+feedparser==6.0.10
+requests==2.31.0
