@@ -2,12 +2,13 @@ name: Jackpot Bot
 
 on:
   schedule:
-    - cron: '0 6-21 * * 1-5' # Every hour 6 AM–9 PM Mon–Fri
-  workflow_dispatch: # Manual trigger
+    - cron: '0 6-21 * * 1-5' # Every hour from 6 AM to 9 PM, Monday to Friday
+  workflow_dispatch: # Allows manual run
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
@@ -15,7 +16,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: 3.11
+          python-version: 3.11  # Latest stable supported
 
       - name: Install dependencies
         run: |
