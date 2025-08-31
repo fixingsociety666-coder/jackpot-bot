@@ -9,15 +9,37 @@ jobs:
   update-and-run-bot:
     runs-on: ubuntu-latest
     steps:
+      # 1️⃣ Checkout the repository
       - uses: actions/checkout@v3
+
+      # 2️⃣ Set up Python
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
+
+      # 3️⃣ Install dependencies
       - name: Install dependencies
         run: pip install -r requirements.txt
+
+      # 4️⃣ Update portfolio CSV
       - name: Update portfolio CSV
         run: python update_portfolio.py
+
+      # 5️⃣ Commit and push updated CSV back to GitHub
+      - name: Commit updated CSV
+        run: |
+          git config --global user.email "your-email@example.com"
+          git config --global user.name "Your Name"
+          git add sample_portfolio.csv
+          git commit -m "Update sample_portfolio.csv via workflow"
+          git push
+        env:
+          # Use GitHub token to allow push
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # 6️⃣ Run Jackpot Bot
       - name: Run Jackpot Bot
         run: python bot.py
+
 
