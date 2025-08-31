@@ -1,186 +1,133 @@
 import os
+import time
 import requests
-import pandas as pd
-import feedparser
-from bs4 import BeautifulSoup
+import yfinance as yf
 from telegram import Bot
 from datetime import datetime
-from polygon import RESTClient
+from bs4 import BeautifulSoup
+import feedparser
 
-# ----------------------------
-# Environment variables
-# ----------------------------
+# --- ENV VARIABLES ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-POLYGON_API_KEY = os.environ.get("POLYGON_API_KEY")
-QUESTRADE_CLIENT_ID = os.environ.get("QUESTRADE_CLIENT_ID")
-QUESTRADE_REFRESH_TOKEN = os.environ.get("QUESTRADE_REFRESH_TOKEN")
+POLYGON_KEY = os.environ.get("POLYGON_API_KEY")
 
-# ----------------------------
-# Initialize Telegram bot
-# ----------------------------
 bot = Bot(token=TELEGRAM_TOKEN)
 
-def send_telegram_message(message: str):
-    try:
-        bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
-        print(f"[{datetime.now()}] Sent: {message}")
-    except Exception as e:
-        print(f"[{datetime.now()}] Telegram error: {e}")
+# --- WATCHLIST / PORTFOLIO TICKERS ---
+tickers = ["AAPL", "TSLA", "MSFT"]  # Add your portfolio + potential picks
 
-# ----------------------------
-# Polygon.io client
-# ----------------------------
-polygon_client = RESTClient(POLYGON_API_KEY)
+# --- NEWS SOURCES ---
+news_sources = {
+    "Seeking Alpha": "https://seekingalpha.com/market-news",
+    "Motley Fool": "https://www.fool.com/investing/stock-market/",
+    "MarketWatch": "https://www.marketwatch.com/latest-news",
+    "TipsRank": "https://www.tipranks.com/stocks",
+    "Barrons": "https://www.barrons.com/topics/stocks"
+}
 
+# --- GOOGLE NEWS RSS ---
+def fetch_google_news(ticker):
+    rss_url = f"https://news.google.com/rss/search?q={ticker}+stock&hl=en-US&gl=US&ceid=US:en"
+    feed = feedparser.parse(rss_url)
+    news_list = []
+    for entry in feed.entries[:5]:  # Top 5 news
+        news_list.append({
+            "title": entry.title,
+            "url": entry.link,
+            "source": "Google News"
+        })
+    return news_list
+
+# --- FUNCTION TO FETCH OTHER NEWS SOURCES ---
+def fetch_other_news():
+    all_news = []
+    headers = {"User-Agent": "Mozilla/5.0"}
+    for source_name, url in news_sources.items():
+        try:
+            r = requests.get(url, headers=headers, timeout=10)
+            soup = BeautifulSoup(r.text, "html.parser")
+            links = soup.find_all("a", href=True)
+            for a in links[:5]:
+                all_news.append({
+                    "title": a.get_text(strip=True),
+                    "url": a["href"],
+                    "source": source_name
+                })
+        except Exception as e:
+            print(f"Error fetching news from {source_name}: {e}")
+    return all_news
+
+# --- FUNCTION TO SEND TELEGRAM ALERT ---
+def send_signal(ticker, price, tp, sl, news_source, sentiment="Strong Positive"):
+    message = f"💹 Strong BUY Signal\nTicker: {ticker}\nPrice: {price}\nTP: {tp}\nSL: {sl}\nSource: {news_source}\nSentiment: {sentiment}"
+    bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+
+# --- FUNCTION TO GET STOCK PRICE (Yahoo / Polygon fallback) ---
 def get_stock_price(ticker):
     try:
-        resp = polygon_client.stocks_equities_last_quote(ticker)
-        return resp.last.price
+        stock = yf.Ticker(ticker)
+        price = stock.history(period="1d")["Close"].iloc[-1]
+        if price <= 0:
+            url = f"https://api.polygon.io/v1/last/stocks/{ticker}?apiKey={POLYGON_KEY}"
+            price_data = requests.get(url).json()
+            price = price_data.get("last", 0)
+        return round(price, 2)
     except Exception as e:
-        print(f"Error fetching {ticker} price: {e}")
-        return None
+        print(f"Error getting price for {ticker}: {e}")
+        return 0
 
-# ----------------------------
-# QuestTrade API (OAuth)
-# ----------------------------
-def get_questrade_access_token():
-    url = "https://login.questrade.com/oauth2/token"
-    data = {
-        "grant_type": "refresh_token",
-        "refresh_token": QUESTRADE_REFRESH_TOKEN,
-        "client_id": QUESTRADE_CLIENT_ID
-    }
-    try:
-        r = requests.post(url, data=data)
-        r.raise_for_status()
-        return r.json()["access_token"]
-    except Exception as e:
-        print(f"Error getting QuestTrade token: {e}")
-        return None
-
-def get_portfolio_positions(access_token):
-    headers = {"Authorization": f"Bearer {access_token}"}
-    try:
-        url = "https://api.questrade.com/v1/accounts"
-        r = requests.get(url, headers=headers)
-        r.raise_for_status()
-        accounts = r.json()["accounts"]
-        account_id = accounts[0]["accountId"]
-        positions_url = f"https://api.questrade.com/v1/accounts/{account_id}/positions"
-        r2 = requests.get(positions_url, headers=headers)
-        r2.raise_for_status()
-        return r2.json()["positions"]
-    except Exception as e:
-        print(f"Error fetching QuestTrade portfolio: {e}")
-        return []
-
-# ----------------------------
-# Google News RSS
-# ----------------------------
-NEWS_FEEDS = [
-    "https://news.google.com/rss/search?q=stocks",
-    "https://news.google.com/rss/search?q=cryptocurrency"
-]
-
-def get_latest_news():
-    articles = []
-    for feed in NEWS_FEEDS:
-        d = feedparser.parse(feed)
-        for entry in d.entries[:5]:
-            articles.append({
-                "title": entry.title,
-                "link": entry.link,
-                "published": entry.published
-            })
-    return articles
-
-# ----------------------------
-# Scrape top financial websites
-# ----------------------------
-FINANCIAL_SITES = [
-    "https://www.fool.com/market-outlook/",
-    "https://seekingalpha.com/market-news",
-    "https://www.marketwatch.com/latest-news",
-    "https://www.barrons.com/market-data",
-    "https://www.barchart.com/stocks",
-    "https://www.tipsranks.com/stocks"
-]
-
-def scrape_stock_recommendations():
-    signals = []
-    for url in FINANCIAL_SITES:
-        try:
-            r = requests.get(url, timeout=10)
-            soup = BeautifulSoup(r.text, "lxml")
-            for link in soup.find_all("a", href=True):
-                title = link.get_text().strip()
-                href = link['href']
-                if title and ("buy" in title.lower() or "strong buy" in title.lower()):
-                    signals.append({"title": title, "link": href, "source": url})
-        except Exception as e:
-            print(f"Error scraping {url}: {e}")
-    return signals
-
-# ----------------------------
-# Simple sentiment filter
-# ----------------------------
-STRONG_BUY_KEYWORDS = ["breakthrough", "all-time high", "record", "strong buy", "major acquisition", "product launch", "positive earnings"]
-BUY_KEYWORDS = ["gain", "uptrend", "buy", "bullish", "rally"]
-
-def analyze_sentiment(text):
-    text_lower = text.lower()
-    if any(word in text_lower for word in STRONG_BUY_KEYWORDS):
-        return "strong_buy"
-    elif any(word in text_lower for word in BUY_KEYWORDS):
-        return "buy"
+# --- FUNCTION TO ANALYZE SENTIMENT ---
+def analyze_sentiment(title):
+    positive_keywords = ["buy", "strong", "upgrade", "outperform", "bullish", "growth", "breakout"]
+    negative_keywords = ["sell", "downgrade", "underperform", "bearish", "decline"]
+    title_lower = title.lower()
+    score = 0
+    for word in positive_keywords:
+        if word in title_lower:
+            score += 1
+    for word in negative_keywords:
+        if word in title_lower:
+            score -= 1
+    if score > 0:
+        return "Strong Positive"
+    elif score == 0:
+        return "Neutral"
     else:
-        return "hold"
+        return "Negative"
 
-# ----------------------------
-# Generate signals
-# ----------------------------
-def check_signals():
-    send_telegram_message("✅ Jackpot Bot started successfully!")
+# --- MAIN LOOP (24/7) ---
+def run_bot():
+    while True:
+        print(f"{datetime.now()}: Starting bot run...")
+        all_news = fetch_other_news()
 
-    token = get_questrade_access_token()
-    positions = get_portfolio_positions(token) if token else []
+        for ticker in tickers:
+            price = get_stock_price(ticker)
+            if price <= 0:
+                continue
+            TP = round(price * 1.05, 2)
+            SL = round(price * 0.97, 2)
 
-    # Portfolio exit signals
-    for pos in positions:
-        ticker = pos["symbol"]
-        price = get_stock_price(ticker)
-        if not price:
-            continue
-        avg_price = pos.get("averageEntryPrice", 0)
-        if price >= avg_price * 1.2:
-            send_telegram_message(f"📈 Exit Alert: {ticker} reached +20% (Price: {price}). Consider selling.")
-        elif price <= avg_price * 0.9:
-            send_telegram_message(f"⚠️ Stop Loss Alert: {ticker} dropped 10% (Price: {price}). Consider exiting.")
+            # Google News
+            google_news = fetch_google_news(ticker)
+            combined_news = all_news + google_news
 
-    # News signals
-    news_items = get_latest_news()
-    for article in news_items:
-        sentiment = analyze_sentiment(article["title"])
-        if sentiment in ["strong_buy", "buy"]:
-            send_telegram_message(f"📰 News Signal ({sentiment.upper()}): {article['title']} \n{article['link']}")
+            sent_alert = False
+            for news in combined_news:
+                if ticker.lower() in news["title"].lower():
+                    sentiment = analyze_sentiment(news["title"])
+                    if sentiment == "Strong Positive":
+                        send_signal(ticker, price, TP, SL, news["source"], sentiment)
+                        sent_alert = True
 
-    # Website scraping signals
-    website_signals = scrape_stock_recommendations()
-    for sig in website_signals:
-        sentiment = analyze_sentiment(sig["title"])
-        if sentiment in ["strong_buy", "buy"]:
-            ticker = sig["title"].split()[0]  # crude extraction
-            price = get_stock_price(ticker) or 0
-            take_profit = round(price * 1.2, 2)
-            stop_loss = round(price * 0.9, 2)
-            send_telegram_message(
-                f"💹 Website Signal ({sentiment.upper()}) from {sig['source']}:\n"
-                f"{sig['title']}\n{sig['link']}\nPrice: {price}, TP: {take_profit}, SL: {stop_loss}"
-            )
+            # Fallback basic alert if no news matched
+            if not sent_alert:
+                send_signal(ticker, price, TP, SL, "Yahoo Finance / Polygon", sentiment="Moderate Positive")
 
-# ----------------------------
-# Main
-# ----------------------------
+        print(f"{datetime.now()}: Bot run completed. Sleeping 1 hour...")
+        time.sleep(3600)  # Wait 1 hour before next run (adjustable)
+
 if __name__ == "__main__":
-    check_signals()
+    run_bot()
+
