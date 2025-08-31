@@ -1,157 +1,149 @@
 import os
 import requests
 import yfinance as yf
+import pandas as pd
 from telegram import Bot
-from datetime import datetime
 from bs4 import BeautifulSoup
 import feedparser
-import pandas as pd
+from datetime import datetime
 
-# --- ENV VARIABLES ---
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-POLYGON_KEY = os.environ.get("POLYGON_API_KEY")
+# -------------------------------
+# Environment / Secrets
+# -------------------------------
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+POLYGON_API_KEY = os.getenv("POLYGON_API_KEY")
+QUESTRADE_CLIENT_ID = os.getenv("QUESTRADE_CLIENT_ID")
+QUESTRADE_REFRESH_TOKEN = os.getenv("QUESTRADE_REFRESH_TOKEN")
 
 bot = Bot(token=TELEGRAM_TOKEN)
 
-# --- PORTFOLIO + WATCHLIST ---
-# Portfolio tickers + penny stock + consistent gainers will be updated dynamically
-portfolio_tickers = ["AAPL", "TSLA", "MSFT"]  # Replace with Quest Trade tickers
-
-# --- FETCH TOP PERFORMING PENNY + CONSISTENT STOCKS FROM BARCHART ---
-def fetch_barchart_top_stocks():
-    try:
-        url = "https://www.barchart.com/stocks/performers/top-performers"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        r = requests.get(url, headers=headers, timeout=10)
-        soup = BeautifulSoup(r.text, "html.parser")
-        table = soup.find("table")
-        tickers = []
-        if table:
-            df = pd.read_html(str(table))[0]
-            tickers = df['Symbol'].tolist()[:100]  # Top 100 performers
-        return tickers
-    except Exception as e:
-        print(f"Error fetching Barchart stocks: {e}")
-        return []
-
-# --- NEWS SOURCES ---
-news_sources = {
-    "Seeking Alpha": "https://seekingalpha.com/market-news",
-    "Motley Fool": "https://www.fool.com/investing/stock-market/",
-    "MarketWatch": "https://www.marketwatch.com/latest-news",
-    "TipsRank": "https://www.tipranks.com/stocks",
-    "Barrons": "https://www.barrons.com/topics/stocks"
-}
-
-# --- GOOGLE NEWS RSS ---
-def fetch_google_news(ticker):
-    rss_url = f"https://news.google.com/rss/search?q={ticker}+stock&hl=en-US&gl=US&ceid=US:en"
-    feed = feedparser.parse(rss_url)
-    news_list = []
-    for entry in feed.entries[:5]:
-        news_list.append({
-            "title": entry.title,
-            "url": entry.link,
-            "source": "Google News"
-        })
-    return news_list
-
-# --- OTHER NEWS ---
-def fetch_other_news():
-    all_news = []
-    headers = {"User-Agent": "Mozilla/5.0"}
-    for source_name, url in news_sources.items():
-        try:
-            r = requests.get(url, headers=headers, timeout=10)
-            soup = BeautifulSoup(r.text, "html.parser")
-            links = soup.find_all("a", href=True)
-            for a in links[:5]:
-                all_news.append({
-                    "title": a.get_text(strip=True),
-                    "url": a["href"],
-                    "source": source_name
-                })
-        except Exception as e:
-            print(f"Error fetching news from {source_name}: {e}")
-    return all_news
-
-# --- GET STOCK PRICE ---
+# -------------------------------
+# Helper functions
+# -------------------------------
 def get_stock_price(ticker):
+    """Get stock price from yfinance"""
     try:
         stock = yf.Ticker(ticker)
-        price = stock.history(period="1d")["Close"].iloc[-1]
-        if price <= 0:
-            url = f"https://api.polygon.io/v1/last/stocks/{ticker}?apiKey={POLYGON_KEY}"
-            price_data = requests.get(url).json()
-            price = price_data.get("last", 0)
-        return round(price, 2)
+        price = stock.history(period="1d")['Close'][0]
+        return price
     except Exception as e:
-        print(f"Error getting price for {ticker}: {e}")
-        return 0
+        print(f"Error fetching {ticker} price: {e}")
+        return None
 
-# --- SENTIMENT ANALYSIS ---
-def analyze_sentiment(title):
-    positive_keywords = ["buy", "strong", "upgrade", "outperform", "bullish", "growth", "breakout"]
-    negative_keywords = ["sell", "downgrade", "underperform", "bearish", "decline"]
-    title_lower = title.lower()
+def fetch_polygon_price(ticker):
+    """Get stock price from Polygon.io"""
+    try:
+        url = f"https://api.polygon.io/v1/last/stocks/{ticker}?apiKey={POLYGON_API_KEY}"
+        resp = requests.get(url).json()
+        return resp['last']['price']
+    except Exception as e:
+        print(f"Polygon error for {ticker}: {e}")
+        return None
+
+def fetch_news_rss(url):
+    try:
+        feed = feedparser.parse(url)
+        articles = []
+        for entry in feed.entries[:5]:
+            title = entry.title
+            link = entry.link
+            articles.append({'title': title, 'link': link})
+        return articles
+    except Exception as e:
+        print(f"RSS fetch error {url}: {e}")
+        return []
+
+def sentiment_score(title):
+    buy_keywords = ["upgrade", "breakout", "rally", "strong buy", "surge"]
+    sell_keywords = ["downgrade", "sell", "drop", "decline"]
     score = 0
-    for word in positive_keywords:
-        if word in title_lower:
-            score += 1
-    for word in negative_keywords:
-        if word in title_lower:
-            score -= 1
-    if score > 1:
-        return "Strong Positive"
-    elif score == 1:
-        return "Moderate Positive"
-    elif score == 0:
-        return "Neutral"
+    title_lower = title.lower()
+    if any(word in title_lower for word in buy_keywords):
+        score = 1
+    elif any(word in title_lower for word in sell_keywords):
+        score = -1
+    return score
+
+def calculate_tp_sl(price, score):
+    if score > 0:
+        tp = price * 1.05
+        sl = price * 0.98
+    elif score < 0:
+        tp = price * 0.98
+        sl = price * 1.05
     else:
-        return "Negative"
+        tp = sl = price
+    return round(tp,2), round(sl,2)
 
-# --- TELEGRAM ALERT ---
-def send_signal(ticker, price, tp, sl, news_source, sentiment, url=""):
-    message = f"💹 Signal: {sentiment}\nTicker: {ticker}\nPrice: {price}\nTP: {tp}\nSL: {sl}\nSource: {news_source}"
-    if url:
-        message += f"\nLink: {url}"
-    bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+def send_telegram(message):
+    try:
+        bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+    except Exception as e:
+        print(f"Telegram send error: {e}")
 
-# --- MAIN BOT RUN ---
-def run_bot():
-    print(f"{datetime.now()}: Starting bot run...")
+# -------------------------------
+# Sources
+# -------------------------------
+rss_feeds = {
+    "Yahoo Finance": "https://finance.yahoo.com/news/rssindex",
+    "Seeking Alpha": "https://seekingalpha.com/market-news.xml",
+    "Motley Fool": "https://www.fool.com/feeds/",
+    "MarketWatch": "https://www.marketwatch.com/rss/topstories",
+    "Barchart": "https://www.barchart.com/rss/news",
+    "TipsRank": "https://www.tipsranks.com/rss/news",
+    "Barrons": "https://www.barrons.com/xml/rss/2_7761.xml"
+}
 
-    # 1️⃣ Update tickers with Barchart top performers
-    top_stocks = fetch_barchart_top_stocks()
-    tickers = list(set(portfolio_tickers + top_stocks))
+# -------------------------------
+# Portfolio (placeholder for QuestTrade API fetch)
+# -------------------------------
+# You can extend this to pull real portfolio tickers via QuestTrade OAuth
+portfolio_tickers = ["AAPL","TSLA","GOOG","AMZN"]  # Your portfolio + top potential stocks
 
-    # 2️⃣ Fetch news once
-    all_news = fetch_other_news()
+# -------------------------------
+# Main Bot Logic
+# -------------------------------
+for ticker in portfolio_tickers:
+    # Get price from yfinance
+    price = get_stock_price(ticker)
+    # Fall back to Polygon if yfinance fails
+    if not price:
+        price = fetch_polygon_price(ticker)
+    if not price:
+        print(f"No price data for {ticker}, skipping.")
+        continue
 
-    for ticker in tickers:
-        price = get_stock_price(ticker)
-        if price <= 0:
-            continue
-        TP = round(price * 1.05, 2)  # Take profit
-        SL = round(price * 0.97, 2)  # Stop loss
+    signals = []
 
-        google_news = fetch_google_news(ticker)
-        combined_news = all_news + google_news
+    # Loop through all news sources
+    for source_name, rss_url in rss_feeds.items():
+        articles = fetch_news_rss(rss_url)
+        for article in articles:
+            score = sentiment_score(article['title'])
+            if score == 0:
+                continue  # skip neutral
+            tp, sl = calculate_tp_sl(price, score)
+            signals.append({
+                'ticker': ticker,
+                'source': source_name,
+                'title': article['title'],
+                'link': article['link'],
+                'price': price,
+                'TP': tp,
+                'SL': sl,
+                'signal': "BUY" if score>0 else "SELL"
+            })
 
-        alert_sent = False
-        for news in combined_news:
-            if ticker.lower() in news["title"].lower():
-                sentiment = analyze_sentiment(news["title"])
-                if sentiment == "Strong Positive":
-                    send_signal(ticker, price, TP, SL, news["source"], sentiment, news["url"])
-                    alert_sent = True
+    # Send Telegram messages
+    for sig in signals:
+        message = (
+            f"💹 {sig['source']} Signal ({sig['signal']}) for {sig['ticker']}:\n"
+            f"Title: {sig['title']}\n"
+            f"Price: {sig['price']}\n"
+            f"TP: {sig['TP']} | SL: {sig['SL']}\n"
+            f"Link: {sig['link']}"
+        )
+        send_telegram(message)
 
-        # Fallback alert for Moderate Positive
-        if not alert_sent:
-            send_signal(ticker, price, TP, SL, "Yahoo Finance / Polygon", sentiment="Moderate Positive")
-
-    print(f"{datetime.now()}: Bot run completed.")
-
-if __name__ == "__main__":
-    run_bot()
+print(f"Bot run completed at {datetime.now()}")
