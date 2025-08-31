@@ -3,7 +3,6 @@ import requests
 import yfinance as yf
 import pandas as pd
 from telegram import Bot
-from bs4 import BeautifulSoup
 import feedparser
 from datetime import datetime
 
@@ -55,14 +54,21 @@ def fetch_news_rss(url):
         return []
 
 def sentiment_score(title):
-    buy_keywords = ["upgrade", "breakout", "rally", "strong buy", "surge"]
-    sell_keywords = ["downgrade", "sell", "drop", "decline"]
-    score = 0
+    """Improved sentiment scoring for more signals"""
     title_lower = title.lower()
-    if any(word in title_lower for word in buy_keywords):
-        score = 1
-    elif any(word in title_lower for word in sell_keywords):
-        score = -1
+    score = 0
+
+    buy_keywords = {"upgrade":0.3, "breakout":0.4, "rally":0.3, "strong buy":0.6, "surge":0.5}
+    sell_keywords = {"downgrade":0.3, "sell":0.3, "drop":0.4, "decline":0.3}
+
+    for word, val in buy_keywords.items():
+        if word in title_lower:
+            score += val
+
+    for word, val in sell_keywords.items():
+        if word in title_lower:
+            score -= val
+
     return score
 
 def calculate_tp_sl(price, score):
@@ -79,6 +85,7 @@ def calculate_tp_sl(price, score):
 def send_telegram(message):
     try:
         bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+        print(f"Telegram message sent: {message[:50]}...")
     except Exception as e:
         print(f"Telegram send error: {e}")
 
@@ -97,17 +104,19 @@ rss_feeds = {
 
 # -------------------------------
 # Portfolio (placeholder for QuestTrade API fetch)
+portfolio_tickers = ["AAPL","TSLA","GOOG","AMZN"]  # Replace with real portfolio tickers
+
 # -------------------------------
-# You can extend this to pull real portfolio tickers via QuestTrade OAuth
-portfolio_tickers = ["AAPL","TSLA","GOOG","AMZN"]  # Your portfolio + top potential stocks
+# Send first test message to Telegram
+send_telegram("✅ Jackpot Bot has started successfully. Testing Telegram alerts!")
 
 # -------------------------------
 # Main Bot Logic
-# -------------------------------
+threshold = 0.3  # Lowered threshold for more signals
+
 for ticker in portfolio_tickers:
     # Get price from yfinance
     price = get_stock_price(ticker)
-    # Fall back to Polygon if yfinance fails
     if not price:
         price = fetch_polygon_price(ticker)
     if not price:
@@ -116,13 +125,12 @@ for ticker in portfolio_tickers:
 
     signals = []
 
-    # Loop through all news sources
     for source_name, rss_url in rss_feeds.items():
         articles = fetch_news_rss(rss_url)
         for article in articles:
             score = sentiment_score(article['title'])
-            if score == 0:
-                continue  # skip neutral
+            if abs(score) < threshold:
+                continue
             tp, sl = calculate_tp_sl(price, score)
             signals.append({
                 'ticker': ticker,
@@ -135,7 +143,6 @@ for ticker in portfolio_tickers:
                 'signal': "BUY" if score>0 else "SELL"
             })
 
-    # Send Telegram messages
     for sig in signals:
         message = (
             f"💹 {sig['source']} Signal ({sig['signal']}) for {sig['ticker']}:\n"
