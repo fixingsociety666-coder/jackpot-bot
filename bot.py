@@ -40,7 +40,7 @@ for idx, row in df.iterrows():
     signal_sources = ["Yahoo Finance"]
     news_text = ""
     news_score = 0
-    price = 100
+    price = 100  # fallback price
 
     if row["Type"] in ["Stock","Penny Stock"] and FINNHUB_KEY:
         try:
@@ -154,6 +154,7 @@ top_signals = sorted(signals_list, key=lambda x: x["Score"], reverse=True)[:10]
 # ---------------- Save Signals ----------------
 if top_signals:
     new_df = pd.DataFrame(top_signals)
+    os.makedirs("signals", exist_ok=True)
     new_df.to_csv("signals/signals.csv", index=False)
     if os.path.exists(prev_file):
         old_df = pd.read_csv(prev_file)
@@ -165,8 +166,7 @@ if top_signals:
     # ---------------- Telegram Digest ----------------
     message = f"📈 Jackpot Bot Daily Digest ({datetime.utcnow().strftime('%Y-%m-%d')})\n\n"
     for s in top_signals:
-        message +=
-                message += f"{s['Ticker']} ({s['Company']}) - {s['Signal']} | Score: {s['Score']}\n"
+        message += f"{s['Ticker']} ({s['Company']}) - {s['Signal']} | Score: {s['Score']}\n"
         message += f"SL: {s['Stop-Loss']} USD | TP: {s['Take-Profit']} USD\n"
         message += f"Source: {s['Source']}\n"
         if s['Summary']:
@@ -181,6 +181,7 @@ if top_signals:
         print("⚠️ Telegram send failed, but bot completed")
 else:
     print("⚠️ No strong signals today")
+
 
 
 
