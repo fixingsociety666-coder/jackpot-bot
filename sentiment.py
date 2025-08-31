@@ -1,10 +1,13 @@
-\from textblob import TextBlob
+from textblob import TextBlob
 
-def analyze_sentiment(text):
+def analyze_sentiment(text: str) -> float:
     """
-    Returns sentiment polarity:
-    >0 positive, <0 negative, 0 neutral
+    Analyze sentiment of a given text and return polarity score.
+    Polarity ranges from -1 (negative) to +1 (positive).
     """
-    blob = TextBlob(text)
-    polarity = blob.sentiment.polarity
-    return polarity
+    try:
+        blob = TextBlob(text)
+        return round(blob.sentiment.polarity, 2)
+    except Exception as e:
+        print(f"Sentiment analysis error: {e}")
+        return 0.0
