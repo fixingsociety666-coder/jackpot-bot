@@ -1,15 +1,15 @@
-name: Jackpot Bot
+]name: Jackpot Bot
 
 on:
   schedule:
-    - cron: '0 6-21 * * 1-5' # Mon-Fri, hourly 6AM-9PM
+    - cron: '0 6-21 * * 1-5' # Every hour 6 AM - 9 PM, Monday-Friday
   workflow_dispatch:
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v3
 
       - name: Set up Python
@@ -28,5 +28,3 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
-          QUESTRADE_CLIENT_ID: ${{ secrets.QUESTRADE_CLIENT_ID }}
-          QUESTRADE_REFRESH_TOKEN: ${{ secrets.QUESTRADE_REFRESH_TOKEN }}
