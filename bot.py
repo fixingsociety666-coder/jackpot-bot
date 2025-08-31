@@ -1,6 +1,8 @@
 import os
 import requests
 import pandas as pd
+from bs4 import BeautifulSoup
+import feedparser
 from telegram import Bot
 from datetime import datetime
 from polygon import RESTClient
@@ -13,12 +15,6 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 POLYGON_API_KEY = os.environ.get("POLYGON_API_KEY")
 QUESTRADE_CLIENT_ID = os.environ.get("QUESTRADE_CLIENT_ID")
 QUESTRADE_REFRESH_TOKEN = os.environ.get("QUESTRADE_REFRESH_TOKEN")
-
-# ----------------------------
-# Validate environment variables
-# ----------------------------
-if not all([TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, POLYGON_API_KEY, QUESTRADE_CLIENT_ID, QUESTRADE_REFRESH_TOKEN]):
-    raise ValueError("One or more required environment variables are missing!")
 
 # ----------------------------
 # Initialize Telegram bot
@@ -70,7 +66,6 @@ def get_portfolio_positions(access_token):
         r = requests.get(url, headers=headers)
         r.raise_for_status()
         accounts = r.json()["accounts"]
-        # Take first account as example
         account_id = accounts[0]["accountId"]
         positions_url = f"https://api.questrade.com/v1/accounts/{account_id}/positions"
         r2 = requests.get(positions_url, headers=headers)
@@ -83,8 +78,6 @@ def get_portfolio_positions(access_token):
 # ----------------------------
 # Google News RSS
 # ----------------------------
-import feedparser
-
 NEWS_FEEDS = [
     "https://news.google.com/rss/search?q=stocks",
     "https://news.google.com/rss/search?q=cryptocurrency"
@@ -94,7 +87,7 @@ def get_latest_news():
     articles = []
     for feed in NEWS_FEEDS:
         d = feedparser.parse(feed)
-        for entry in d.entries[:5]:  # Only latest 5 per feed
+        for entry in d.entries[:5]:
             articles.append({
                 "title": entry.title,
                 "link": entry.link,
@@ -103,47 +96,78 @@ def get_latest_news():
     return articles
 
 # ----------------------------
-# Placeholder: Social Sentiment Analysis
+# Scrape top financial websites
+# ----------------------------
+FINANCIAL_SITES = [
+    "https://www.fool.com/market-outlook/",
+    "https://seekingalpha.com/market-news",
+    "https://www.marketwatch.com/latest-news",
+]
+
+def scrape_stock_recommendations():
+    signals = []
+    for url in FINANCIAL_SITES:
+        try:
+            r = requests.get(url, timeout=10)
+            soup = BeautifulSoup(r.text, "lxml")
+            # This is simplified, you can enhance per site structure
+            for link in soup.find_all("a", href=True):
+                title = link.get_text().strip()
+                href = link['href']
+                if title and ("buy" in title.lower() or "strong buy" in title.lower()):
+                    signals.append({"title": title, "link": href, "source": url})
+        except Exception as e:
+            print(f"Error scraping {url}: {e}")
+    return signals
+
+# ----------------------------
+# Simple sentiment filter
 # ----------------------------
 def analyze_sentiment(text):
-    # Placeholder: Replace with real sentiment analysis
-    # Return "strong_buy", "buy", "hold", "sell", "strong_sell"
     text_lower = text.lower()
-    if any(word in text_lower for word in ["breakthrough", "all-time high", "record"]):
+    if any(word in text_lower for word in ["breakthrough", "all-time high", "record", "strong buy"]):
         return "strong_buy"
-    elif any(word in text_lower for word in ["gain", "uptrend"]):
+    elif any(word in text_lower for word in ["gain", "uptrend", "buy"]):
         return "buy"
-    elif any(word in text_lower for word in ["loss", "downtrend"]):
+    elif any(word in text_lower for word in ["loss", "downtrend", "sell"]):
         return "sell"
     else:
         return "hold"
 
 # ----------------------------
-# Bot Logic: Generate Signals
+# Generate signals
 # ----------------------------
 def check_signals():
-    # 1. Portfolio positions
     token = get_questrade_access_token()
     positions = get_portfolio_positions(token) if token else []
 
+    # Portfolio exit signals
     for pos in positions:
         ticker = pos["symbol"]
         price = get_stock_price(ticker)
         if not price:
             continue
 
-        # Example: simple placeholder for exit signal
-        if price >= pos["averageEntryPrice"] * 1.2:  # 20% gain
-            send_telegram_message(f"📈 Exit Alert: {ticker} has reached +20%. Consider selling.")
-        elif price <= pos["averageEntryPrice"] * 0.9:  # 10% loss
-            send_telegram_message(f"⚠️ Stop Loss Alert: {ticker} has dropped 10%. Consider exiting.")
+        avg_price = pos.get("averageEntryPrice", 0)
+        # Exit at 20% profit or 10% stop-loss
+        if price >= avg_price * 1.2:
+            send_telegram_message(f"📈 Exit Alert: {ticker} reached +20% (Price: {price}). Consider selling.")
+        elif price <= avg_price * 0.9:
+            send_telegram_message(f"⚠️ Stop Loss Alert: {ticker} dropped 10% (Price: {price}). Consider exiting.")
 
-    # 2. News signals
+    # News signals
     news_items = get_latest_news()
     for article in news_items:
         sentiment = analyze_sentiment(article["title"])
         if sentiment in ["strong_buy", "buy"]:
             send_telegram_message(f"📰 News Signal ({sentiment.upper()}): {article['title']} \n{article['link']}")
+
+    # Website scraping signals
+    website_signals = scrape_stock_recommendations()
+    for sig in website_signals:
+        sentiment = analyze_sentiment(sig["title"])
+        if sentiment in ["strong_buy", "buy"]:
+            send_telegram_message(f"💹 Website Signal ({sentiment.upper()}) from {sig['source']}:\n{sig['title']}\n{sig['link']}")
 
 # ----------------------------
 # Main
@@ -151,4 +175,3 @@ def check_signals():
 if __name__ == "__main__":
     send_telegram_message("✅ Jackpot Bot started successfully!")
     check_signals()
-
