@@ -1,6 +1,6 @@
 Ticker,Company,Type
-AAPL,Apple Inc,Stock
-MSFT,Microsoft Corp,Stock
 BTC,Bitcoin,Crypto
 ETH,Ethereum,Crypto
-
+BNB,Binance Coin,Crypto
+SOL,Solana,Crypto
+ADA,Cardano,Crypto
