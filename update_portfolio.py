@@ -1,9 +1,11 @@
-import openai
 import os
+import pandas as pd
+from openai import OpenAI
 
-# Get API key from environment variable (set in GitHub secrets)
-openai.api_key = os.environ["OPENAI_API_KEY"]
+# Initialize OpenAI client
+client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 
+# Prompt to generate portfolio CSV
 prompt = """
 Generate a CSV with columns: Ticker, Company, Type.
 Include:
@@ -13,7 +15,8 @@ Include:
 Return CSV only, no extra text.
 """
 
-response = openai.ChatCompletion.create(
+# Call GPT-5 model via new OpenAI API
+response = client.chat.completions.create(
     model="gpt-5-mini",
     messages=[{"role": "user", "content": prompt}],
     temperature=0.2
@@ -25,5 +28,6 @@ csv_text = response.choices[0].message.content
 with open("sample_portfolio.csv", "w") as f:
     f.write(csv_text)
 
-print("CSV automatically generated via ChatGPT API")
+print("✅ CSV automatically generated via ChatGPT API")
+
 
