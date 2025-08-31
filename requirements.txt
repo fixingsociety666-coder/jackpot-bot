@@ -1,6 +1,5 @@
-python-telegram-bot==13.7
+pandas
 requests
-beautifulsoup4
+python-telegram-bot
 feedparser
-nltk
-schedule
+polygon-api-client
