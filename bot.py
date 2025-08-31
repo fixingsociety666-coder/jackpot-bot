@@ -1,11 +1,11 @@
 import os
-import time
 import requests
 import yfinance as yf
 from telegram import Bot
 from datetime import datetime
 from bs4 import BeautifulSoup
 import feedparser
+import pandas as pd
 
 # --- ENV VARIABLES ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
@@ -14,8 +14,26 @@ POLYGON_KEY = os.environ.get("POLYGON_API_KEY")
 
 bot = Bot(token=TELEGRAM_TOKEN)
 
-# --- WATCHLIST / PORTFOLIO TICKERS ---
-tickers = ["AAPL", "TSLA", "MSFT"]  # Add your portfolio + potential picks
+# --- PORTFOLIO + WATCHLIST ---
+# Portfolio tickers + penny stock + consistent gainers will be updated dynamically
+portfolio_tickers = ["AAPL", "TSLA", "MSFT"]  # Replace with Quest Trade tickers
+
+# --- FETCH TOP PERFORMING PENNY + CONSISTENT STOCKS FROM BARCHART ---
+def fetch_barchart_top_stocks():
+    try:
+        url = "https://www.barchart.com/stocks/performers/top-performers"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        r = requests.get(url, headers=headers, timeout=10)
+        soup = BeautifulSoup(r.text, "html.parser")
+        table = soup.find("table")
+        tickers = []
+        if table:
+            df = pd.read_html(str(table))[0]
+            tickers = df['Symbol'].tolist()[:100]  # Top 100 performers
+        return tickers
+    except Exception as e:
+        print(f"Error fetching Barchart stocks: {e}")
+        return []
 
 # --- NEWS SOURCES ---
 news_sources = {
@@ -31,7 +49,7 @@ def fetch_google_news(ticker):
     rss_url = f"https://news.google.com/rss/search?q={ticker}+stock&hl=en-US&gl=US&ceid=US:en"
     feed = feedparser.parse(rss_url)
     news_list = []
-    for entry in feed.entries[:5]:  # Top 5 news
+    for entry in feed.entries[:5]:
         news_list.append({
             "title": entry.title,
             "url": entry.link,
@@ -39,7 +57,7 @@ def fetch_google_news(ticker):
         })
     return news_list
 
-# --- FUNCTION TO FETCH OTHER NEWS SOURCES ---
+# --- OTHER NEWS ---
 def fetch_other_news():
     all_news = []
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -58,12 +76,7 @@ def fetch_other_news():
             print(f"Error fetching news from {source_name}: {e}")
     return all_news
 
-# --- FUNCTION TO SEND TELEGRAM ALERT ---
-def send_signal(ticker, price, tp, sl, news_source, sentiment="Strong Positive"):
-    message = f"💹 Strong BUY Signal\nTicker: {ticker}\nPrice: {price}\nTP: {tp}\nSL: {sl}\nSource: {news_source}\nSentiment: {sentiment}"
-    bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
-
-# --- FUNCTION TO GET STOCK PRICE (Yahoo / Polygon fallback) ---
+# --- GET STOCK PRICE ---
 def get_stock_price(ticker):
     try:
         stock = yf.Ticker(ticker)
@@ -77,7 +90,7 @@ def get_stock_price(ticker):
         print(f"Error getting price for {ticker}: {e}")
         return 0
 
-# --- FUNCTION TO ANALYZE SENTIMENT ---
+# --- SENTIMENT ANALYSIS ---
 def analyze_sentiment(title):
     positive_keywords = ["buy", "strong", "upgrade", "outperform", "bullish", "growth", "breakout"]
     negative_keywords = ["sell", "downgrade", "underperform", "bearish", "decline"]
@@ -89,45 +102,56 @@ def analyze_sentiment(title):
     for word in negative_keywords:
         if word in title_lower:
             score -= 1
-    if score > 0:
+    if score > 1:
         return "Strong Positive"
+    elif score == 1:
+        return "Moderate Positive"
     elif score == 0:
         return "Neutral"
     else:
         return "Negative"
 
-# --- MAIN LOOP (24/7) ---
+# --- TELEGRAM ALERT ---
+def send_signal(ticker, price, tp, sl, news_source, sentiment, url=""):
+    message = f"💹 Signal: {sentiment}\nTicker: {ticker}\nPrice: {price}\nTP: {tp}\nSL: {sl}\nSource: {news_source}"
+    if url:
+        message += f"\nLink: {url}"
+    bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+
+# --- MAIN BOT RUN ---
 def run_bot():
-    while True:
-        print(f"{datetime.now()}: Starting bot run...")
-        all_news = fetch_other_news()
+    print(f"{datetime.now()}: Starting bot run...")
 
-        for ticker in tickers:
-            price = get_stock_price(ticker)
-            if price <= 0:
-                continue
-            TP = round(price * 1.05, 2)
-            SL = round(price * 0.97, 2)
+    # 1️⃣ Update tickers with Barchart top performers
+    top_stocks = fetch_barchart_top_stocks()
+    tickers = list(set(portfolio_tickers + top_stocks))
 
-            # Google News
-            google_news = fetch_google_news(ticker)
-            combined_news = all_news + google_news
+    # 2️⃣ Fetch news once
+    all_news = fetch_other_news()
 
-            sent_alert = False
-            for news in combined_news:
-                if ticker.lower() in news["title"].lower():
-                    sentiment = analyze_sentiment(news["title"])
-                    if sentiment == "Strong Positive":
-                        send_signal(ticker, price, TP, SL, news["source"], sentiment)
-                        sent_alert = True
+    for ticker in tickers:
+        price = get_stock_price(ticker)
+        if price <= 0:
+            continue
+        TP = round(price * 1.05, 2)  # Take profit
+        SL = round(price * 0.97, 2)  # Stop loss
 
-            # Fallback basic alert if no news matched
-            if not sent_alert:
-                send_signal(ticker, price, TP, SL, "Yahoo Finance / Polygon", sentiment="Moderate Positive")
+        google_news = fetch_google_news(ticker)
+        combined_news = all_news + google_news
 
-        print(f"{datetime.now()}: Bot run completed. Sleeping 1 hour...")
-        time.sleep(3600)  # Wait 1 hour before next run (adjustable)
+        alert_sent = False
+        for news in combined_news:
+            if ticker.lower() in news["title"].lower():
+                sentiment = analyze_sentiment(news["title"])
+                if sentiment == "Strong Positive":
+                    send_signal(ticker, price, TP, SL, news["source"], sentiment, news["url"])
+                    alert_sent = True
+
+        # Fallback alert for Moderate Positive
+        if not alert_sent:
+            send_signal(ticker, price, TP, SL, "Yahoo Finance / Polygon", sentiment="Moderate Positive")
+
+    print(f"{datetime.now()}: Bot run completed.")
 
 if __name__ == "__main__":
     run_bot()
-
