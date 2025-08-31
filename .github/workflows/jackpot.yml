@@ -1,56 +1,36 @@
-name: Jackpot Bot GPT
+name: Jackpot Daily Digest (Stocks + Crypto)
 
 on:
   schedule:
-    - cron: '0 12 * * *'  # runs daily at 12:00 UTC
+    - cron: '0 12 * * *'  # every day at 12:00 UTC
   workflow_dispatch:
 
 jobs:
-  update-and-run-bot:
+  run-daily-digest:
     runs-on: ubuntu-latest
 
     steps:
-      # Checkout repo
       - uses: actions/checkout@v3
 
-      # Set up Python
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
 
-      # Install dependencies
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # Generate portfolio CSV via GPT
-      - name: Generate portfolio CSV via ChatGPT
-        run: python update_portfolio.py
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      - name: Update Auto Portfolio
+        run: python update_portfolio_auto.py
 
-      # Commit updated CSV back to GitHub
-      - name: Commit updated CSV
-        run: |
-          git config --global user.email "fixingsociety666@gmail.com"
-          git config --global user.name "fixingsociety666-coder"
-          git add sample_portfolio.csv
-          git commit -m "Update sample_portfolio.csv via GPT workflow" || echo "No changes to commit"
-          git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }} HEAD:main
-
-      # Run Jackpot Bot for signals
       - name: Run Jackpot Bot
         run: python bot.py
+        env:
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 
-      # Show signals in workflow logs
-      - name: Show Signals
-        run: |
-          if [ -f signals/signals.csv ]; then
-            echo "----- Jackpot Bot Signals -----"
-            cat signals/signals.csv
-          else
-            echo "No signals generated."
-          fi
 
 
 
