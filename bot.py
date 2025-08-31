@@ -166,5 +166,21 @@ if top_signals:
     message = f"📈 Jackpot Bot Daily Digest ({datetime.utcnow().strftime('%Y-%m-%d')})\n\n"
     for s in top_signals:
         message +=
+                message += f"{s['Ticker']} ({s['Company']}) - {s['Signal']} | Score: {s['Score']}\n"
+        message += f"SL: {s['Stop-Loss']} USD | TP: {s['Take-Profit']} USD\n"
+        message += f"Source: {s['Source']}\n"
+        if s['Summary']:
+            message += f"GPT Summary: {s['Summary']}\n"
+        message += "\n"
+
+    try:
+        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                      data={"chat_id": CHAT_ID, "text": message})
+        print("✅ Telegram digest sent")
+    except:
+        print("⚠️ Telegram send failed, but bot completed")
+else:
+    print("⚠️ No strong signals today")
+
 
 
