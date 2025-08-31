@@ -1,7 +1,7 @@
-python-telegram-bot==20.4
+pandas
 requests
 feedparser
-pandas
-polygon-api-client
 beautifulsoup4
+python-telegram-bot==13.15
+polygon-api-client
 lxml
