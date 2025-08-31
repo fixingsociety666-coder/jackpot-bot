@@ -1,19 +1,36 @@
-# sentiment.py
-def sentiment_score(title):
-    score = 0
-    buy_kw = {"upgrade":0.3, "breakout":0.4, "rally":0.3, "strong buy":0.6, "surge":0.5}
-    sell_kw = {"downgrade":0.3, "sell":0.3, "drop":0.4, "decline":0.3}
-    t = title.lower()
-    for w,v in buy_kw.items():
-        if w in t: score += v
-    for w,v in sell_kw.items():
-        if w in t: score -= v
-    return score
+from textblob import TextBlob
 
-def calculate_tp_sl(price, score):
-    if price == 0:
-        return 0,0
-    if score > 0: tp, sl = price*1.05, price*0.98
-    elif score < 0: tp, sl = price*0.98, price*1.05
-    else: tp = sl = price
-    return round(tp,2), round(sl,2)
+def analyze_sentiment(text: str) -> str:
+    """
+    Analyze sentiment of given text using TextBlob.
+    Returns one of: "positive", "negative", or "neutral".
+    Always safe (never crashes).
+    """
+    if not text or not isinstance(text, str):
+        return "neutral"
+
+    try:
+        polarity = TextBlob(text).sentiment.polarity
+        if polarity > 0.1:
+            return "positive"
+        elif polarity < -0.1:
+            return "negative"
+        else:
+            return "neutral"
+    except Exception as e:
+        # Fallback: if TextBlob fails, default to neutral
+        return "neutral"
+
+
+def sentiment_score(text: str) -> float:
+    """
+    Returns a polarity score between -1.0 and 1.0.
+    Useful if you want numeric scoring instead of just categories.
+    """
+    if not text or not isinstance(text, str):
+        return 0.0
+
+    try:
+        return TextBlob(text).sentiment.polarity
+    except Exception:
+        return 0.0
