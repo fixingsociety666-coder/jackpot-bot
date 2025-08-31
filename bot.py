@@ -21,23 +21,19 @@ bot = Bot(token=TELEGRAM_TOKEN)
 # Helper functions
 # -------------------------------
 def get_stock_price(ticker):
-    """Get stock price from yfinance"""
     try:
         stock = yf.Ticker(ticker)
         price = stock.history(period="1d")['Close'][0]
         return price
-    except Exception as e:
-        print(f"Error fetching {ticker} price: {e}")
+    except:
         return None
 
 def fetch_polygon_price(ticker):
-    """Get stock price from Polygon.io"""
     try:
         url = f"https://api.polygon.io/v1/last/stocks/{ticker}?apiKey={POLYGON_API_KEY}"
         resp = requests.get(url).json()
         return resp['last']['price']
-    except Exception as e:
-        print(f"Polygon error for {ticker}: {e}")
+    except:
         return None
 
 def fetch_news_rss(url):
@@ -45,30 +41,23 @@ def fetch_news_rss(url):
         feed = feedparser.parse(url)
         articles = []
         for entry in feed.entries[:5]:
-            title = entry.title
-            link = entry.link
-            articles.append({'title': title, 'link': link})
+            articles.append({'title': entry.title, 'link': entry.link})
         return articles
-    except Exception as e:
-        print(f"RSS fetch error {url}: {e}")
+    except:
         return []
 
 def sentiment_score(title):
-    """Improved sentiment scoring for more signals"""
+    """Simple sentiment scoring"""
     title_lower = title.lower()
     score = 0
-
     buy_keywords = {"upgrade":0.3, "breakout":0.4, "rally":0.3, "strong buy":0.6, "surge":0.5}
     sell_keywords = {"downgrade":0.3, "sell":0.3, "drop":0.4, "decline":0.3}
-
     for word, val in buy_keywords.items():
         if word in title_lower:
             score += val
-
     for word, val in sell_keywords.items():
         if word in title_lower:
             score -= val
-
     return score
 
 def calculate_tp_sl(price, score):
@@ -90,7 +79,7 @@ def send_telegram(message):
         print(f"Telegram send error: {e}")
 
 # -------------------------------
-# Sources
+# News Sources
 # -------------------------------
 rss_feeds = {
     "Yahoo Finance": "https://finance.yahoo.com/news/rssindex",
@@ -103,54 +92,38 @@ rss_feeds = {
 }
 
 # -------------------------------
-# Portfolio (placeholder for QuestTrade API fetch)
-portfolio_tickers = ["AAPL","TSLA","GOOG","AMZN"]  # Replace with real portfolio tickers
+# Portfolio
+portfolio_tickers = ["AAPL","TSLA","GOOG","AMZN"]  # Replace with QuestTrade dynamic fetch
 
 # -------------------------------
-# Send first test message to Telegram
-send_telegram("✅ Jackpot Bot has started successfully. Testing Telegram alerts!")
+# Test Telegram connectivity
+send_telegram("✅ Jackpot Bot started successfully. Telegram alerts are live!")
 
 # -------------------------------
 # Main Bot Logic
-threshold = 0.3  # Lowered threshold for more signals
-
 for ticker in portfolio_tickers:
-    # Get price from yfinance
+    # Get price
     price = get_stock_price(ticker)
     if not price:
         price = fetch_polygon_price(ticker)
     if not price:
-        print(f"No price data for {ticker}, skipping.")
-        continue
+        price = 0  # fallback
 
-    signals = []
-
+    # Analyze news
     for source_name, rss_url in rss_feeds.items():
         articles = fetch_news_rss(rss_url)
         for article in articles:
             score = sentiment_score(article['title'])
-            if abs(score) < threshold:
-                continue
             tp, sl = calculate_tp_sl(price, score)
-            signals.append({
-                'ticker': ticker,
-                'source': source_name,
-                'title': article['title'],
-                'link': article['link'],
-                'price': price,
-                'TP': tp,
-                'SL': sl,
-                'signal': "BUY" if score>0 else "SELL"
-            })
+            signal_type = "BUY" if score>0 else "SELL" if score<0 else "NEUTRAL"
 
-    for sig in signals:
-        message = (
-            f"💹 {sig['source']} Signal ({sig['signal']}) for {sig['ticker']}:\n"
-            f"Title: {sig['title']}\n"
-            f"Price: {sig['price']}\n"
-            f"TP: {sig['TP']} | SL: {sig['SL']}\n"
-            f"Link: {sig['link']}"
-        )
-        send_telegram(message)
+            message = (
+                f"💹 {source_name} Signal ({signal_type}) for {ticker}:\n"
+                f"Title: {article['title']}\n"
+                f"Price: {price}\n"
+                f"TP: {tp} | SL: {sl}\n"
+                f"Link: {article['link']}"
+            )
+            send_telegram(message)
 
 print(f"Bot run completed at {datetime.now()}")
