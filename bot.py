@@ -110,7 +110,6 @@ def scrape_stock_recommendations():
         try:
             r = requests.get(url, timeout=10)
             soup = BeautifulSoup(r.text, "lxml")
-            # This is simplified, you can enhance per site structure
             for link in soup.find_all("a", href=True):
                 title = link.get_text().strip()
                 href = link['href']
@@ -138,6 +137,9 @@ def analyze_sentiment(text):
 # Generate signals
 # ----------------------------
 def check_signals():
+    # Telegram start message
+    send_telegram_message("✅ Jackpot Bot started successfully!")
+
     token = get_questrade_access_token()
     positions = get_portfolio_positions(token) if token else []
 
@@ -173,5 +175,5 @@ def check_signals():
 # Main
 # ----------------------------
 if __name__ == "__main__":
-    send_telegram_message("✅ Jackpot Bot started successfully!")
     check_signals()
+
