@@ -1,5 +1,7 @@
-pandas
+python-telegram-bot==20.4
 requests
-python-telegram-bot
 feedparser
+pandas
 polygon-api-client
+beautifulsoup4
+lxml
