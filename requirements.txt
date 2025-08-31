@@ -1,6 +1,8 @@
-numpy==1.26.4
-pandas==2.1.4
-yfinance==0.2.44
-python-telegram-bot==20.3
-feedparser==6.0.10
-requests==2.31.0
+pandas
+numpy
+requests
+beautifulsoup4
+lxml
+textblob
+nltk
+python-telegram-bot==13.7
