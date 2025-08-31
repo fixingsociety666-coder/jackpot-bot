@@ -1,4 +1,4 @@
-name: Jackpot Bot
+name: Jackpot Bot GPT
 
 on:
   schedule:
@@ -10,37 +10,39 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1️⃣ Checkout repository
+      # Checkout repo
       - uses: actions/checkout@v3
 
-      # 2️⃣ Set up Python
+      # Set up Python
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
 
-      # 3️⃣ Install dependencies
+      # Install dependencies
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r requirements.txt openai pandas
 
-      # 4️⃣ Update portfolio CSV
-      - name: Update portfolio CSV
+      # Generate portfolio CSV via GPT
+      - name: Generate portfolio CSV via ChatGPT
         run: python update_portfolio.py
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 
-      # 5️⃣ Commit & push updated CSV back to GitHub
+      # Commit updated CSV back to GitHub
       - name: Commit updated CSV
         run: |
           git config --global user.email "fixingsociety666@gmail.com"
           git config --global user.name "fixingsociety666-coder"
           git add sample_portfolio.csv
-          git commit -m "Update sample_portfolio.csv via workflow" || echo "No changes to commit"
+          git commit -m "Update sample_portfolio.csv via GPT workflow" || echo "No changes to commit"
           git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }} HEAD:main
 
-      # 6️⃣ Run Jackpot Bot
+      # Run Jackpot Bot for signals
       - name: Run Jackpot Bot
         run: python bot.py
 
-      # 7️⃣ Debug logs for signals
+      # Show signals in workflow logs
       - name: Show Signals
         run: |
           if [ -f signals/signals.csv ]; then
@@ -49,6 +51,7 @@ jobs:
           else
             echo "No signals generated."
           fi
+
 
 
 
