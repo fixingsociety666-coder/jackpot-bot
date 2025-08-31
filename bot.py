@@ -4,7 +4,7 @@ import yfinance as yf
 import pandas as pd
 from telegram import Bot
 import feedparser
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # -------------------------------
 # Environment / Secrets
@@ -16,6 +16,43 @@ QUESTRADE_CLIENT_ID = os.getenv("QUESTRADE_CLIENT_ID")
 QUESTRADE_REFRESH_TOKEN = os.getenv("QUESTRADE_REFRESH_TOKEN")
 
 bot = Bot(token=TELEGRAM_TOKEN)
+
+# -------------------------------
+# QuestTrade OAuth helper
+# -------------------------------
+def get_questrade_access_token():
+    """Fetch fresh access token from QuestTrade using refresh token"""
+    try:
+        url = f"https://login.questrade.com/oauth2/token?grant_type=refresh_token&refresh_token={QUESTRADE_REFRESH_TOKEN}&client_id={QUESTRADE_CLIENT_ID}"
+        resp = requests.post(url).json()
+        return resp.get("access_token")
+    except:
+        return None
+
+def get_questrade_portfolio():
+    """Fetch current holdings from QuestTrade account"""
+    access_token = get_questrade_access_token()
+    if not access_token:
+        print("Could not get QuestTrade access token.")
+        return []
+
+    try:
+        headers = {"Authorization": f"Bearer {access_token}"}
+        acct_resp = requests.get("https://api.questrade.com/v1/accounts", headers=headers).json()
+        accounts = acct_resp.get("accounts", [])
+        tickers = []
+
+        for acct in accounts:
+            acct_id = acct["number"]
+            positions_resp = requests.get(f"https://api.questrade.com/v1/accounts/{acct_id}/positions", headers=headers).json()
+            positions = positions_resp.get("positions", [])
+            for pos in positions:
+                if pos["openQuantity"] > 0:
+                    tickers.append(pos["symbol"])
+        return tickers
+    except Exception as e:
+        print(f"Error fetching portfolio: {e}")
+        return []
 
 # -------------------------------
 # Helper functions
@@ -61,6 +98,8 @@ def sentiment_score(title):
     return score
 
 def calculate_tp_sl(price, score):
+    if price == 0:
+        return 0,0
     if score > 0:
         tp = price * 1.05
         sl = price * 0.98
@@ -92,15 +131,15 @@ rss_feeds = {
 }
 
 # -------------------------------
-# Portfolio
-portfolio_tickers = ["AAPL","TSLA","GOOG","AMZN"]  # Replace with QuestTrade dynamic fetch
-
+# Main Bot Logic
 # -------------------------------
-# Test Telegram connectivity
+portfolio_tickers = get_questrade_portfolio()
+if not portfolio_tickers:
+    print("No tickers found in QuestTrade portfolio, defaulting to AAPL, TSLA, GOOG")
+    portfolio_tickers = ["AAPL","TSLA","GOOG"]
+
 send_telegram("✅ Jackpot Bot started successfully. Telegram alerts are live!")
 
-# -------------------------------
-# Main Bot Logic
 for ticker in portfolio_tickers:
     # Get price
     price = get_stock_price(ticker)
@@ -109,7 +148,7 @@ for ticker in portfolio_tickers:
     if not price:
         price = 0  # fallback
 
-    # Analyze news
+    # Analyze news from all sources
     for source_name, rss_url in rss_feeds.items():
         articles = fetch_news_rss(rss_url)
         for article in articles:
