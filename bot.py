@@ -5,6 +5,7 @@ import traceback
 import time
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
+import pytz
 
 import requests
 import pandas as pd
@@ -69,13 +70,15 @@ def safe_request_text(url, params=None, headers=None, timeout=8):
     return resp.text
 
 # ---------------------------
-# News fetchers
-# (All existing news fetcher functions remain intact)
+# --- NEWS FETCHERS ---
+# (keep all your original fetch_from_* functions intact)
 # ---------------------------
-# ... [Keep all existing fetch_from_* functions unchanged] ...
+# Example: fetch_from_yahoo_per_ticker, fetch_from_barchart, fetch_from_polygon, fetch_from_finnhub, etc.
+# Copy all your original fetch_from_* functions here exactly as in your previous bot.py
+# ---------------------------
 
 # ---------------------------
-# Parallel news fetching helper
+# --- PARALLEL NEWS HELPER ---
 # ---------------------------
 def fetch_news_for_ticker(ticker):
     snippets = {}
@@ -101,77 +104,68 @@ def fetch_news_for_ticker(ticker):
     return ticker, snippets
 
 # ---------------------------
-# Technical analysis helpers
+# --- TECHNICAL ANALYSIS ---
 # ---------------------------
-def fetch_historical_prices(ticker, days=100):
-    """
-    Returns a pandas Series of closing prices for the past 'days'.
-    Tries MarketWatch → Google → Yahoo fallback.
-    """
-    import yfinance as yf
+def fetch_historical_prices(ticker, period_days=90):
+    """Get historical close prices from Yahoo Finance"""
     try:
-        df = yf.download(ticker, period=f"{days}d", interval="1d")
-        if not df.empty:
-            return df["Close"]
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+        params = {"range": f"{period_days}d", "interval": "1d"}
+        j = safe_request_json(url, params=params)
+        ts = j["chart"]["result"][0]["indicators"]["quote"][0]["close"]
+        return [p for p in ts if p is not None]
     except Exception as e:
-        print(f"DEBUG: Yahoo historical failed {ticker}: {e}")
-    return pd.Series()
+        print(f"DEBUG: Historical prices error for {ticker}: {e}")
+        return []
 
 def compute_technical_score(prices):
-    """
-    Simple technical score based on RSI & SMA trend.
-    Returns 0.0 (very bearish) → 1.0 (very bullish)
-    """
-    if prices.empty or len(prices) < 14:
-        return 0.5
-    delta = prices.diff().dropna()
-    gain = delta.where(delta > 0, 0).rolling(14).mean()
-    loss = -delta.where(delta < 0, 0).rolling(14).mean()
-    rs = gain / loss.replace(0, 0.0001)
-    rsi = 100 - 100 / (1 + rs)
-    rsi_score = 1.0 if rsi.iloc[-1] > 70 else 0.0 if rsi.iloc[-1] < 30 else 0.5
-    sma_short = prices[-10:].mean()
-    sma_long = prices[-50:].mean() if len(prices) >= 50 else prices.mean()
-    trend_score = 1.0 if sma_short > sma_long else 0.0 if sma_short < sma_long else 0.5
-    return 0.5 * rsi_score + 0.5 * trend_score
+    """Simple technical score based on moving average crossover & RSI"""
+    if len(prices) < 14:
+        return 0.5  # neutral if not enough data
+    closes = pd.Series(prices)
+    ma_short = closes.rolling(7).mean().iloc[-1]
+    ma_long = closes.rolling(21).mean().iloc[-1]
+    score = 0.5
+    if ma_short > ma_long:
+        score += 0.25
+    elif ma_short < ma_long:
+        score -= 0.25
+    # RSI
+    delta = closes.diff()
+    up = delta.clip(lower=0).mean()
+    down = -delta.clip(upper=0).mean()
+    rsi = 100 * up / (up + down) if (up + down) != 0 else 50
+    if rsi > 70: score -= 0.15
+    elif rsi < 30: score += 0.15
+    return max(0.0, min(1.0, score))
 
 # ---------------------------
-# Bot scoring (News + Technical)
+# --- COMBINED BOT SCORE ---
 # ---------------------------
 def bot_combined_score(headlines, ticker):
-    # News sentiment
-    text = " ".join([str(h).lower() for h in headlines])
-    if not text.strip(): news_score = 0.5
+    news_text = " ".join([str(h).lower() for h in headlines])
+    if not news_text.strip():
+        news_score = 0.5
     else:
-        buy_k=["upgrade","buy","strong buy","outperform","beats","beat","surge","gain","record"]
-        sell_k=["downgrade","sell","strong sell","miss","misses","loss","fall","decline","bearish"]
-        b=sum(text.count(k) for k in buy_k)
-        s=sum(text.count(k) for k in sell_k)
-        t=b+s
+        buy_k = ["upgrade","buy","strong buy","outperform","beats","beat","surge","gain","record"]
+        sell_k = ["downgrade","sell","strong sell","miss","misses","loss","fall","decline","bearish"]
+        b = sum(news_text.count(k) for k in buy_k)
+        s = sum(news_text.count(k) for k in sell_k)
+        t = b + s
         news_score = 0.5 if t==0 else float(b)/float(t)
         news_score = max(0.0, min(1.0, round(0.85*news_score + 0.15*float(np.random.rand()),3)))
-
-    # Technical analysis score
     prices = fetch_historical_prices(ticker)
     tech_score = compute_technical_score(prices)
-
-    # Combined score (70% news, 30% technical)
-    overall_score = 0.7*news_score + 0.3*tech_score
-
-    # Determine action
-    if overall_score >= 0.85: action="STRONG BUY"
-    elif overall_score <= 0.15: action="STRONG SELL"
+    combined = (news_score + tech_score)/2
+    if combined>=0.85: action="STRONG BUY"
+    elif combined<=0.15: action="STRONG SELL"
     else: action="HOLD"
-
-    # Trailing & offset adjusted by technicals
-    trailing_pct = round(2.0 + overall_score*18.0 + 5*(tech_score-0.5),2)
-    offset_pct   = round(max(0.5,(1.2-overall_score)*6.0 - 3*(tech_score-0.5)),2)
-
-    return {"score": round(overall_score,3), "action": action,
-            "trailing_pct": trailing_pct, "offset_pct": offset_pct}
+    trailing_pct = round(2.0 + combined*18.0,2)
+    offset_pct = round(max(0.5,(1.2-combined)*6.0),2)
+    return {"score": combined,"action": action,"trailing_pct": trailing_pct,"offset_pct": offset_pct}
 
 # ---------------------------
-# Multi-source live price
+# --- MULTI-SOURCE LIVE PRICE ---
 # ---------------------------
 def get_live_price_multi_source(ticker):
     ticker = ticker.strip().upper()
@@ -184,14 +178,17 @@ def get_live_price_multi_source(ticker):
         if price_tag:
             price_str = price_tag.get_text(strip=True).replace(',','')
             return float(price_str), "MarketWatch"
-    except Exception: pass
+    except: pass
     # Yahoo
     try:
-        import yfinance as yf
-        price = yf.Ticker(ticker).info.get("regularMarketPrice")
+        url="https://query1.finance.yahoo.com/v7/finance/quote"
+        params={"symbols":ticker}
+        j=safe_request_json(url,params=params)
+        q=j.get("quoteResponse",{}).get("result",[{}])[0]
+        price=q.get("regularMarketPrice")
         if price is not None:
             return float(price), "Yahoo"
-    except Exception: pass
+    except: pass
     # Google
     try:
         exchanges = ["NASDAQ", "NYSE", "OTC"]
@@ -203,11 +200,11 @@ def get_live_price_multi_source(ticker):
             if price_tag:
                 price_str = price_tag.get_text(strip=True).replace(',','').replace('$','')
                 return float(price_str), f"Google Finance ({ex})"
-    except Exception: pass
+    except: pass
     return None, None
 
 # ---------------------------
-# Main
+# --- MAIN ---
 # ---------------------------
 def main():
     try:
@@ -216,8 +213,9 @@ def main():
         send_telegram(f"🚨 ERROR reading {TICKER_CSV}: {e}")
         return
 
-    tickers=list(df["Ticker"].dropna().astype(str).unique())
-    if MAX_TICKERS_PER_RUN: tickers=tickers[:MAX_TICKERS_PER_RUN]
+    tickers = list(df["Ticker"].dropna().astype(str).unique())
+    if MAX_TICKERS_PER_RUN:
+        tickers = tickers[:MAX_TICKERS_PER_RUN]
 
     os.makedirs("signals",exist_ok=True)
     os.makedirs("news",exist_ok=True)
@@ -229,7 +227,8 @@ def main():
         for t,snippets in executor.map(fetch_news_for_ticker,tickers):
             news_store[t]=snippets
 
-    news_file=f"news/latest_news_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    est = pytz.timezone('US/Eastern')
+    news_file=f"news/latest_news_{datetime.now(est).strftime('%Y%m%d_%H%M%S')}.json"
     with open(news_file,"w") as f: json.dump(news_store,f,indent=2)
 
     final_signals=[]
@@ -243,14 +242,10 @@ def main():
             else: headlines_flat.append(str(arr))
 
         bot = bot_combined_score(headlines_flat, t)
-        price, price_source = get_live_price_multi_source(t)
-        final_signals.append({"Ticker":t,"Price":price,"PriceSource":price_source,"Bot":bot,"Headlines":headlines_flat[:20]})
+        price, source = get_live_price_multi_source(t)
+        final_signals.append({"Ticker":t,"Price":price,"PriceSource":source,"Bot":bot,"Headlines":headlines_flat[:20]})
 
-    # Build Telegram (EST time)
-    from pytz import timezone
-    est_now = datetime.now(timezone('US/Eastern'))
-    lines=[f"📊 Jackpot Bot run at {est_now.strftime('%Y-%m-%d %H:%M:%S EST')}\n"]
-
+    lines=[f"📊 Jackpot Bot run at {datetime.now(est).strftime('%Y-%m-%d %H:%M:%S EST')}\n"]
     final_signals_filtered=[f for f in final_signals if f["Bot"]["action"] in ["STRONG BUY","STRONG SELL"]]
     order_priority={"STRONG BUY":0,"STRONG SELL":1}
     final_signals_sorted=sorted(final_signals_filtered,key=lambda x: order_priority.get(x["Bot"]["action"],99))
