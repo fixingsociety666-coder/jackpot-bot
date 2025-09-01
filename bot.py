@@ -496,10 +496,16 @@ def main():
     # 5) Build clean Telegram message
     lines = []
     lines.append(f"📊 Jackpot Bot run at {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}\n")
-    # Order: STRONG BUY -> STRONG SELL -> BUY -> SELL -> HOLD (user requested order)
-    order_priority = {"STRONG BUY": 0, "BUY": 1, "SELL": 3, "STRONG SELL": 2, "HOLD": 4}
-    # sort by bot score descending primarily, then action priority
-    final_signals_sorted = sorted(final_signals, key=lambda x: ( -x["Bot"]["score"], order_priority.get(x["Bot"]["action"], 5) ))
+
+    # Only show STRONG BUY and STRONG SELL
+    final_signals_filtered = [f for f in final_signals if f["Bot"]["action"] in ["STRONG BUY", "STRONG SELL"]]
+
+    # Order: STRONG BUY first, then STRONG SELL
+    order_priority = {"STRONG BUY": 0, "STRONG SELL": 1}
+    final_signals_sorted = sorted(
+        final_signals_filtered,
+        key=lambda x: order_priority.get(x["Bot"]["action"], 99)
+    )
 
     for f in final_signals_sorted:
         t = f["Ticker"]
@@ -507,47 +513,26 @@ def main():
         ds = f["DeepSeek"]
         gpt = f["GPT"]
 
-        # Icon mapping (visual differentiation)
-        icon = "⏸️"
-        if bot["action"] == "STRONG BUY":
-            icon = "💎"
-        elif bot["action"] == "BUY":
-            icon = "✅"
-        elif bot["action"] == "SELL":
-            icon = "⚠️"
-        elif bot["action"] == "STRONG SELL":
-            icon = "💀"
+        icon = "💎" if bot["action"] == "STRONG BUY" else "💀"
 
-        lines.append(f"{icon} {t}: {bot['action']} (bot score {bot['score']})")
-        # Bot suggested TP/SL (always present)
-        lines.append(f"   🛠 Bot (fallback) → TP: {bot['tp_pct']}% | SL: {bot['sl_pct']}%")
+        lines.append(f"{icon} {t}: {bot['action']} (score {bot['score']})")
+        lines.append(f"   🛠 Bot → TP: {bot['tp_pct']}% | SL: {bot['sl_pct']}%")
 
-        # DeepSeek info (if available)
+        # DeepSeek info
         if isinstance(ds["raw"], dict):
-            ds_score = ds.get("score")
-            ds_action = ds.get("action") or ds.get("raw", {}).get("recommendation")
-            ds_tp = ds.get("tp") or ds.get("raw", {}).get("take_profit")
-            ds_sl = ds.get("sl") or ds.get("raw", {}).get("stop_loss")
-            lines.append(f"   🔍 DeepSeek → score: {ds_score} action: {ds_action} TP: {ds_tp}% SL: {ds_sl}%")
+            lines.append(f"   🔍 DeepSeek → score: {ds.get('score')} action: {ds.get('action')} "
+                         f"TP: {ds.get('tp')}% SL: {ds.get('sl')}%")
         else:
             lines.append(f"   🔍 DeepSeek → {ds['raw']}")
 
-        # ChatGPT info (if available)
+        # GPT info
         if isinstance(gpt["raw"], dict):
-            lines.append(f"   🤖 GPT → ok: {gpt.get('ok')} TP: {gpt.get('tp')}% SL: {gpt.get('sl')}% — {gpt.get('note')}")
+            lines.append(f"   🤖 GPT → ok: {gpt.get('ok')} TP: {gpt.get('tp')}% SL: {gpt.get('sl')}% "
+                         f"— {gpt.get('note')}")
         else:
             lines.append(f"   🤖 GPT → {gpt['raw']}")
 
-        # Headlines (one-liners — keep short)
-        headlines = f.get("Headlines", [])[:6]
-        for h in headlines:
-            snippet = (h[:140] + "...") if len(h) > 140 else h
-            lines.append(f"   📰 {snippet}")
-        lines.append("")  # blank separator
-
-    # Footer with file paths
-    lines.append(f"📂 Signals saved: {signals_file}")
-    lines.append(f"📂 News saved: {news_file}")
+        lines.append("")  # separator
 
     message = "\n".join(lines)
     send_telegram(message)
