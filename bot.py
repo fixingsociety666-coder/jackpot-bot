@@ -12,6 +12,7 @@ import numpy as np
 from bs4 import BeautifulSoup
 import feedparser
 import yfinance as yf
+from sklearn.linear_model import LinearRegression  # Added for forecast
 
 # ---------------------------
 # Config / Environment names
@@ -68,6 +69,41 @@ def safe_request_text(url, params=None, headers=None, timeout=8):
     resp = requests.get(url, params=params, headers=headers, timeout=timeout)
     resp.raise_for_status()
     return resp.text
+
+# ---------------------------
+# Forecast function
+# ---------------------------
+def forecast_trend(ticker, days_ahead=5):
+    """
+    Forecast next N days trend using linear regression on historical closing prices.
+    Returns: list of dicts: [{"day": 1, "forecast": price, "icon": "🟢/🔴/⚪"}, ...]
+    """
+    try:
+        data = yf.Ticker(ticker).history(period="60d")['Close']
+        if len(data) < 10:
+            return [{"day": i+1, "forecast": None, "icon": "⚪"} for i in range(days_ahead)]
+        
+        X = np.arange(len(data)).reshape(-1, 1)
+        y = data.values
+        model = LinearRegression().fit(X, y)
+        
+        future_X = np.arange(len(data), len(data)+days_ahead).reshape(-1, 1)
+        forecast_prices = model.predict(future_X)
+        
+        icons = []
+        last_price = data.values[-1]
+        for price in forecast_prices:
+            if price > last_price * 1.01:  # >1% increase
+                icons.append("🟢")
+            elif price < last_price * 0.99:  # >1% decrease
+                icons.append("🔴")
+            else:
+                icons.append("⚪")
+            last_price = price
+        
+        return [{"day": i+1, "forecast": round(forecast_prices[i],2), "icon": icons[i]} for i in range(days_ahead)]
+    except Exception:
+        return [{"day": i+1, "forecast": None, "icon": "⚪"} for i in range(days_ahead)]
 
 # ---------------------------
 # News fetchers
@@ -354,7 +390,14 @@ def main():
             source=f.get("PriceSource")
             icon="🟢" if bot["action"]=="STRONG BUY" else "🔴"
             price_str=f"${price:.2f} ({source})" if isinstance(price,(int,float)) else "Price N/A"
-            lines.append(f"{icon} {t} | {bot['action']} | Score: {bot['score']*100:.1f}% | Trailing: {bot['trailing_pct']}% | Offset: {bot['offset_pct']}% | {price_str}")
+            # Add forecast
+            forecast = forecast_trend(t)
+            forecast_str = " | ".join([f"{f['icon']}{f['forecast'] if f['forecast'] else 'N/A'}" for f in forecast])
+            lines.append(
+                f"{icon} {t} | {bot['action']} | Score: {bot['score']*100:.1f}% | "
+                f"Trailing: {bot['trailing_pct']}% | Offset: {bot['offset_pct']}% | {price_str}\n"
+                f"Forecast: {forecast_str}"
+            )
     send_telegram("\n".join(lines))
 
 if __name__=="__main__":
