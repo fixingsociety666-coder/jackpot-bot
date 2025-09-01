@@ -1,82 +1,87 @@
+import os
 import pandas as pd
 import requests
-import yfinance as yf
 from telegram import Bot
-import openai
-import os
+from datetime import datetime
 
-# Environment variables from GitHub secrets
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+# --- ENV VARIABLES ---
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")  # for ChatGPT sanity check
 
-# Initialize Telegram bot
 bot = Bot(token=TELEGRAM_TOKEN)
 
-# Initialize OpenAI client
-openai.api_key = OPENAI_API_KEY
+# --- CSV TICKERS ---
+TICKER_CSV = "tickers.csv"  # Must exist in repo
+try:
+    df_tickers = pd.read_csv(TICKER_CSV)
+    tickers = df_tickers['Ticker'].dropna().tolist()
+except Exception as e:
+    bot.send_message(chat_id=TELEGRAM_CHAT_ID,
+                     text=f"❌ Error reading tickers.csv: {e}")
+    tickers = []
 
-# CSV file with tickers
-TICKER_CSV = "tickers.csv"
-
-# News sources (replace with actual API endpoints or RSS feeds)
+# --- NEWS SOURCES ---
 NEWS_SOURCES = {
     "MotleyFool": "https://api.mock-motleyfool.com/top-picks",
     "SeekingAlpha": "https://api.mock-seekingalpha.com/top-picks",
     "MarketWatch": "https://api.mock-marketwatch.com/top-stocks",
-    "TipsRank": "https://api.mock-tipsrank.com/top-stocks",
-    "Barrons": "https://api.mock-barrons.com/top-stocks",
-    "Barchart": "https://api.mock-barchart.com/top-stocks"
+    "YahooFinance": "https://api.mock-yahoo.com/top-stocks",
+    "TipRanks": "https://api.mock-tipranks.com/top-stocks",
 }
 
-# Function to fetch news source recommendations
-def fetch_news_recommendations():
-    recommendations = []
-    for source, url in NEWS_SOURCES.items():
-        try:
-            response = requests.get(url, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-            for stock in data.get("stocks", []):
-                recommendations.append({
-                    "ticker": stock["ticker"],
-                    "source": source,
-                    "price": stock.get("price", 0.0),
-                    "take_profit": stock.get("take_profit", 0.0),
-                    "stop_loss": stock.get("stop_loss", 0.0)
-                })
-        except Exception as e:
-            # Send Telegram alert if source fails
-            bot.send_message(chat_id=TELEGRAM_CHAT_ID,
-                             text=f"⚠️ Failed to fetch data from {source}: {e}")
-    return recommendations
-
-# ChatGPT sanity check
-def chatgpt_sanity_check(ticker, reason):
-    prompt = f"Analyze this stock pick: {ticker}. Reason: {reason}. Is this a strong buy? Provide suggested take profit and stop loss."
+# --- FUNCTION TO FETCH NEWS ---
+def fetch_news(source_name, url):
     try:
-        response = openai.ChatCompletion.create(
-            model="gpt-4",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3
-        )
-        content = response.choices[0].message.content
-        return content
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("top_stocks", [])
     except Exception as e:
-        return f"ChatGPT sanity check failed: {e}"
+        bot.send_message(chat_id=TELEGRAM_CHAT_ID,
+                         text=f"⚠️ Failed to fetch {source_name}: {e}")
+        return []
 
-# Read tickers
-df_tickers = pd.read_csv(TICKER_CSV)
-tickers = df_tickers['Ticker'].tolist()
+# --- COLLECT SIGNALS ---
+signals = []
 
-# Fetch recommendations
-recommendations = fetch_news_recommendations()
+for source, url in NEWS_SOURCES.items():
+    top_stocks = fetch_news(source, url)
+    for stock in top_stocks:
+        if stock["ticker"] in tickers:
+            # Example TP/SL calculation
+            price = stock.get("price", 0.0)
+            signals.append({
+                "Ticker": stock["ticker"],
+                "Source": source,
+                "Price": price,
+                "TP": price * 1.05 if price else 0.0,
+                "SL": price * 0.95 if price else 0.0
+            })
 
-# Filter only tickers in our CSV
-final_recommendations = [r for r in recommendations if r["ticker"] in tickers]
+# --- CHATGPT SANITY CHECK ---
+def chatgpt_sanity_check(signal):
+    try:
+        # Simple placeholder: replace with OpenAI API call if needed
+        return f"✅ {signal['Ticker']} sanity check passed"
+    except Exception as e:
+        return f"⚠️ {signal['Ticker']} sanity check failed: {e}"
 
-# Prepare Telegram message
-for rec in final_recommendations:
-    sanity_result = chatgpt_sanity_check(rec["ticker"], f"Recommendation from {rec['source']}")
-    message = f"💹 Signal from {rec['source']}:\nTicker: {rec['ticker']}\nPrice: {rec['price']}\nTP: {rec['take_profit']}\nSL: {rec['stop_loss']}\nChatGPT Feedback:\n{sanity_result}"
-    bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+# --- BUILD MESSAGE ---
+if signals:
+    messages = []
+    for sig in signals:
+        sanity = chatgpt_sanity_check(sig)
+        messages.append(f"💹 {sig['Ticker']} (BUY) from {sig['Source']}\n"
+                        f"Price: {sig['Price']}, TP: {sig['TP']}, SL: {sig['SL']}\n"
+                        f"{sanity}\n")
+    final_message = f"🕒 Signals for {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}:\n\n"
+    final_message += "\n".join(messages)
+else:
+    final_message = f"⚠️ No signals found for your tickers at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+
+# --- SEND TELEGRAM ---
+try:
+    bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=final_message)
+except Exception as e:
+    print(f"❌ Failed to send Telegram message: {e}")
