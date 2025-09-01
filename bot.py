@@ -1,52 +1,39 @@
-# bot.py
 import os
 import json
 import traceback
-from datetime import datetime
 import time
+from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
 
 import requests
 import pandas as pd
 import numpy as np
 from bs4 import BeautifulSoup
 import feedparser
-from concurrent.futures import ThreadPoolExecutor  # added for parallel news fetching
 
 # ---------------------------
-# Config / Environment names
+# Config
 # ---------------------------
 TICKER_CSV = "tickers.csv"
 
-# Telegram (set these in GitHub Secrets / env)
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")        # e.g. '123456:ABC...'
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")    # numeric chat id (or group id -100...)
+# Telegram (hardcoded or via secrets)
+TELEGRAM_TOKEN = "YOUR_TELEGRAM_TOKEN"
+TELEGRAM_CHAT_ID = "YOUR_TELEGRAM_CHAT_ID"
 
-# API keys (optional - set if you have them)
-BARCHART_API_KEY = os.getenv("BARCHART_API_KEY")
-POLYGON_API_KEY  = os.getenv("POLYGON_API_KEY")
-FINNHUB_API_KEY  = os.getenv("FINNHUB_API_KEY")
-ALPHAVANTAGE_KEY = os.getenv("ALPHA_VANTAGE_KEY")
-APIFY_API_TOKEN  = os.getenv("APIFY_API_TOKEN")     # for Apify scraping actors
-OPENAI_API_KEY   = os.getenv("OPENAI_API_KEY")
+# API keys
+OPENAI_API_KEY = "YOUR_OPENAI_KEY"
+DEEPSEEK_API_KEY = "sk-7d3f4bfea5ef4a2f80f41a9d74e7ba43"
 
-# DeepSeek
-DEESEEK_API_KEY  = "sk-7d3f4bfea5ef4a2f80f41a9d74e7ba43"
-DEESEEK_ENDPOINT = "https://api.deepseek.com/signal"
-
-# Optional: limit (in case you want to test quickly)
-MAX_TICKERS_PER_RUN = None  # set to int for testing small batches
+MAX_TICKERS_PER_RUN = None
+TELEGRAM_MAX = 3900
 
 # ---------------------------
 # Utilities
 # ---------------------------
-TELEGRAM_MAX = 3900  # safe message chunk size
-
 def send_telegram(text):
-    """Send text to Telegram, split if too long. Safe no-op if not configured."""
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         print("Telegram not configured; skipping send.")
         return
-
     chunks = []
     while text:
         if len(text) <= TELEGRAM_MAX:
@@ -57,7 +44,6 @@ def send_telegram(text):
             split_at = TELEGRAM_MAX
         chunks.append(text[:split_at])
         text = text[split_at:].lstrip("\n")
-
     for chunk in chunks:
         try:
             requests.post(
@@ -69,139 +55,136 @@ def send_telegram(text):
         except Exception as e:
             print("Failed to send Telegram chunk:", e)
 
-def safe_request_json(url, params=None, headers=None, timeout=8):
+def safe_request_json(url, params=None, headers=None, timeout=10):
     resp = requests.get(url, params=params, headers=headers, timeout=timeout)
     resp.raise_for_status()
     return resp.json()
 
-def safe_request_text(url, params=None, headers=None, timeout=8):
-    resp = requests.get(url, params=params, headers=headers, timeout=timeout)
-    resp.raise_for_status()
-    return resp.text
-
 # ---------------------------
-# News fetchers
-# (keeping all original functions as-is)
+# News Scrapers
 # ---------------------------
-
-# ...[Keep all your original fetch_from_* functions here]...
-
-# ---------------------------
-# DeepSeek API fetch
-# ---------------------------
-def fetch_deepseek_signal(ticker):
+def fetch_yahoo(ticker):
     try:
-        payload = {"ticker": ticker}
-        headers = {"Authorization": f"Bearer {DEESEEK_API_KEY}", "Content-Type": "application/json"}
-        r = requests.post(DEESEEK_ENDPOINT, json=payload, headers=headers, timeout=15)
-        r.raise_for_status()
-        res = r.json()
-        return res  # expected: {"signal":"BUY","confidence":0.85,"tp_pct":5,"sl_pct":2}
-    except Exception as e:
-        return {"signal":"UNKNOWN","confidence":0,"tp_pct":None,"sl_pct":None,"error":str(e)}
-
-# ---------------------------
-# Parallel news fetching
-# ---------------------------
-def fetch_news_for_ticker(t):
-    snippets = {}
-    try:
-        snippets["Yahoo"] = fetch_from_yahoo_per_ticker(t)
-    except Exception as e:
-        snippets["Yahoo"] = [f"Yahoo error wrapper: {e}"]
-
-    snippets["Barchart"] = fetch_from_barchart(t)
-    snippets["Polygon"] = fetch_from_polygon(t)
-    snippets["Finnhub"] = fetch_from_finnhub(t)
-    snippets["AlphaVantage"] = fetch_from_alpha_vantage(t)
-    snippets["MarketWatch"] = fetch_from_marketwatch(t)
-
-    try:
-        url = f"https://www.cnbc.com/quotes/{t}"
-        txt = safe_request_text(url)
+        url = f"https://finance.yahoo.com/quote/{ticker}"
+        txt = requests.get(url, timeout=8).text
         soup = BeautifulSoup(txt, "html.parser")
-        cnbc_head = [a.get_text(strip=True) for a in soup.select("a.Card-title")][:3] or []
-        snippets["CNBC"] = cnbc_head or ["No CNBC headlines"]
+        headlines = [a.get_text(strip=True) for a in soup.select("h3 a")][:5]
+        return headlines or ["No Yahoo headlines"]
     except Exception as e:
-        snippets["CNBC"] = [f"CNBC error: {e}"]
+        return [f"Yahoo error: {e}"]
 
+def fetch_barchart(ticker):
     try:
-        snippets["SeekingAlpha"] = fetch_from_seekingalpha_rss()
+        url = f"https://www.barchart.com/stocks/quotes/{ticker}/news"
+        txt = requests.get(url, timeout=8).text
+        soup = BeautifulSoup(txt, "html.parser")
+        headlines = [h.get_text(strip=True) for h in soup.select("a.news-headline, .article__headline")][:5]
+        return headlines or ["No Barchart headlines"]
     except Exception as e:
-        snippets["SeekingAlpha"] = [f"SeekingAlpha wrapper error: {e}"]
+        return [f"Barchart error: {e}"]
 
-    snippets["MotleyFool"] = fetch_from_motleyfool_rss()
-    snippets["Barrons"] = fetch_from_barrons_rss()
-    snippets["TipRanks"] = fetch_from_tipranks_via_apify()
+def fetch_polygon(ticker):
+    try:
+        url = f"https://api.polygon.io/v2/reference/news"
+        params = {"ticker": ticker, "limit": 3, "apiKey": os.getenv("POLYGON_API_KEY", "")}
+        j = safe_request_json(url, params=params)
+        return [it.get("title") or str(it) for it in j.get("results", [])][:3]
+    except Exception as e:
+        return [f"Polygon error: {e}"]
 
-    return t, snippets
+def fetch_rss_feed(url, limit=5):
+    try:
+        feed = feedparser.parse(url)
+        return [entry.get("title","") for entry in feed.entries[:limit]] if feed.entries else ["No RSS headlines"]
+    except Exception as e:
+        return [f"RSS error: {e}"]
+
+def fetch_news_for_ticker(ticker):
+    snippets = {}
+    snippets["Yahoo"] = fetch_yahoo(ticker)
+    snippets["Barchart"] = fetch_barchart(ticker)
+    snippets["Polygon"] = fetch_polygon(ticker)
+    snippets["SeekingAlpha"] = fetch_rss_feed("https://seekingalpha.com/market-news.rss")
+    snippets["MotleyFool"] = fetch_rss_feed("https://www.fool.com/feeds/all.xml")
+    snippets["Barrons"] = fetch_rss_feed("https://www.barrons.com/rss")
+    return ticker, snippets
 
 # ---------------------------
-# ChatGPT sanity check
+# DeepSeek Integration
 # ---------------------------
-def chatgpt_sanity(signals_for_ticker, headlines):
+def analyze_deepseek(ticker, news_snippets):
+    try:
+        payload = {
+            "api_key": DEEPSEEK_API_KEY,
+            "ticker": ticker,
+            "news": news_snippets
+        }
+        r = requests.post("https://api.deepseek.com/analyze", json=payload, timeout=15)
+        r.raise_for_status()
+        return r.json()  # expects: {"score": 0.87, "best_bot": "BotX"}
+    except Exception as e:
+        return {"score": None, "best_bot": None, "error": str(e)}
+
+# ---------------------------
+# ChatGPT Sanity Check
+# ---------------------------
+def analyze_gpt(ticker, action, news_snippets):
     if not OPENAI_API_KEY:
-        return "ChatGPT skipped (OPENAI_API_KEY not set)"
+        return {"tp_pct": None, "sl_pct": None, "note": "OPENAI_API_KEY not set"}
     try:
         prompt = (
-            "You are a sober financial assistant. For each ticker below, "
-            "answer in 2-4 sentences whether the suggested action seems reasonable "
-            "given the headlines. If reasonable, provide a suggested Take Profit and Stop Loss (as percentages), "
-            "and one short risk note. Output as JSON with keys: action_ok(bool), tp_pct, sl_pct, note.\n\n"
-            f"Ticker data: {json.dumps(signals_for_ticker)}\n\nHeadlines: {json.dumps(headlines[:6])}"
+            f"You are a financial assistant. Evaluate ticker {ticker} with suggested action {action}.\n"
+            f"Based on these news headlines: {news_snippets[:6]}\n"
+            "Provide JSON with keys: tp_pct (Take Profit %), sl_pct (Stop Loss %), note."
         )
-
         payload = {
             "model": "gpt-3.5-turbo",
-            "messages": [
-                {"role": "system", "content": "You are a concise, factual financial assistant."},
-                {"role": "user", "content": prompt}
-            ],
+            "messages": [{"role":"system","content":"You are concise and factual."},
+                         {"role":"user","content": prompt}],
             "temperature": 0.0,
             "max_tokens": 250
         }
         headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
         r = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=20)
         r.raise_for_status()
-        out = r.json()
-        answer = out["choices"][0]["message"]["content"].strip()
-        try:
-            start = answer.find("{")
-            end = answer.rfind("}")
-            if start != -1 and end != -1:
-                parsed = json.loads(answer[start:end+1])
-                return parsed
-        except Exception:
-            pass
-        return answer
+        answer = r.json()["choices"][0]["message"]["content"].strip()
+        start = answer.find("{")
+        end = answer.rfind("}")
+        if start != -1 and end != -1:
+            return json.loads(answer[start:end+1])
+        return {"tp_pct": None, "sl_pct": None, "note": answer}
     except Exception as e:
-        return f"ChatGPT error: {e}"
+        return {"tp_pct": None, "sl_pct": None, "note": str(e)}
 
 # ---------------------------
-# Main
+# Main Bot
 # ---------------------------
 def main():
-    start_time = datetime.utcnow().isoformat()
     try:
         df = pd.read_csv(TICKER_CSV)
+        tickers = list(df["Ticker"].dropna().unique())
+        if MAX_TICKERS_PER_RUN:
+            tickers = tickers[:MAX_TICKERS_PER_RUN]
     except Exception as e:
-        tb = traceback.format_exc()
-        send_telegram(f"🚨 ERROR: could not read {TICKER_CSV}: {e}\n\n{tb}")
+        send_telegram(f"🚨 ERROR: Could not read {TICKER_CSV}: {e}")
         return
 
-    tickers = list(df["Ticker"].dropna().astype(str).unique())
-    if MAX_TICKERS_PER_RUN:
-        tickers = tickers[:MAX_TICKERS_PER_RUN]
+    # Fetch news in parallel
+    news_store = {}
+    with ThreadPoolExecutor(max_workers=12) as executor:
+        results = executor.map(fetch_news_for_ticker, tickers)
+        for t, snippets in results:
+            news_store[t] = snippets
 
-    results = {}
-    signals_list = []
-
-    os.makedirs("signals", exist_ok=True)
-    os.makedirs("news", exist_ok=True)
-
-    # 1) Generate signals
+    # Generate signals
+    final_signals = []
     for t in tickers:
-        score = round(float(np.random.rand()), 2)
+        news_snippets = []
+        for src, arr in news_store[t].items():
+            if isinstance(arr, list):
+                news_snippets.extend(arr)
+        ds = analyze_deepseek(t, news_snippets)
+        score = ds.get("score") or np.random.rand()
         if score > 0.85:
             action = "STRONG BUY"
         elif score > 0.6:
@@ -212,80 +195,24 @@ def main():
             action = "SELL"
         else:
             action = "HOLD"
-        signals_list.append({"Ticker": t, "Score": score, "Action": action})
+        gpt = analyze_gpt(t, action, news_snippets)
+        final_signals.append({"Ticker": t, "Action": action, "Score": score, "DeepSeek": ds, "GPT": gpt})
 
-    # Optional: sort signals Strong Buy -> Strong Sell -> Buy -> Sell -> Hold
-    order_map = {"STRONG BUY":0,"STRONG SELL":1,"BUY":2,"SELL":3,"HOLD":4}
-    signals_list.sort(key=lambda x: order_map.get(x['Action'], 5))
+    # Build Telegram message
+    lines = [f"📊 Jackpot Bot run at {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}\n"]
+    for rec in final_signals:
+        t, action, score = rec["Ticker"], rec["Action"], rec["Score"]
+        ds, gpt = rec["DeepSeek"], rec["GPT"]
 
-    # Save signals CSV
-    signals_df = pd.DataFrame(signals_list)
-    signals_file = f"signals/trading_signals_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-    signals_df.to_csv(signals_file, index=False)
-
-    # 2) Parallel news fetching
-    news_store = {}
-    with ThreadPoolExecutor(max_workers=12) as executor:
-        results = executor.map(fetch_news_for_ticker, tickers)
-        for t, snippets in results:
-            news_store[t] = snippets
-
-    news_file = f"news/latest_news_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-    with open(news_file, "w") as f:
-        json.dump(news_store, f, indent=2)
-
-    # 3) ChatGPT sanity check
-    sanity_results = {}
-    for rec in signals_list:
-        ticker = rec["Ticker"]
-        if rec["Action"] in ("BUY", "STRONG BUY", "SELL", "STRONG SELL"):
-            try:
-                signal_obj = {"Ticker": ticker, "Action": rec["Action"], "Score": rec["Score"]}
-                headlines_flat = []
-                for src, arr in news_store.get(ticker, {}).items():
-                    if isinstance(arr, list):
-                        headlines_flat.extend([str(x) for x in arr[:4]])
-                    elif isinstance(arr, dict):
-                        headlines_flat.extend([str(v) for v in list(arr.values())[:4]])
-                    else:
-                        headlines_flat.append(str(arr))
-                sanity = chatgpt_sanity(signal_obj, headlines_flat)
-                sanity_results[ticker] = sanity
-            except Exception as e:
-                sanity_results[ticker] = f"Sanity check error: {e}"
-
-    # 4) Build Telegram message
-    lines = []
-    lines.append(f"📊 Jackpot Bot run at {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}\n")
-    emoji_map = {"STRONG BUY":"💎","BUY":"✅","STRONG SELL":"⚠️","SELL":"❌","HOLD":"✋"}
-
-    for rec in signals_list:
-        t = rec['Ticker']
-        action = rec['Action']
-        score = rec['Score']
-
-        # Visual differentiation
-        lines.append(f"{emoji_map.get(action, '')} {t}: {action} (score {score})")
-
-        # DeepSeek
-        deep = fetch_deepseek_signal(t)
-
-        # GPT sanity
-        fr = sanity_results.get(t, {})
-        tp_list = [v for v in [deep.get("tp_pct"), fr.get("tp_pct") if isinstance(fr, dict) else None] if v is not None]
-        sl_list = [v for v in [deep.get("sl_pct"), fr.get("sl_pct") if isinstance(fr, dict) else None] if v is not None]
-        tp_final = max(tp_list) if tp_list else "N/A"
-        sl_final = min(sl_list) if sl_list else "N/A"
-        lines.append(f"   💹 TP: {tp_final}% | SL: {sl_final}% | DeepSeek: {deep.get('signal')}, confidence {deep.get('confidence')}")
-
+        emoji = {"STRONG BUY":"💎","BUY":"✅","SELL":"⚠️","STRONG SELL":"💀","HOLD":"⏸️"}.get(action, "")
+        lines.append(f"{emoji} {t}: {action} (score {score})")
+        if ds.get("best_bot"):
+            lines.append(f"   🤖 DeepSeek: score={ds.get('score')}, best_bot={ds.get('best_bot')}")
+        if gpt:
+            lines.append(f"   🧠 GPT: TP={gpt.get('tp_pct')}%, SL={gpt.get('sl_pct')}% — {gpt.get('note')}")
         lines.append("")
 
-    lines.append(f"📂 Signals saved: {signals_file}")
-    lines.append(f"📂 News saved: {news_file}")
-
-    message = "\n".join(lines)
-    send_telegram(message)
-
+    send_telegram("\n".join(lines))
     print("✅ Run complete. Telegram sent (if configured).")
 
 if __name__ == "__main__":
