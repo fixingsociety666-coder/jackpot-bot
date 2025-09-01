@@ -450,11 +450,12 @@ def main():
     send_telegram(message)
 
     print("✅ Run complete. Telegram sent (if configured).")
-except Exception:
-    tb = traceback.format_exc()
-    print(tb)
-    send_telegram(f"🚨 Bot crashed:\n{tb}")
-
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        tb = traceback.format_exc()
+        print(tb)
+        send_telegram(f"🚨 Bot crashed:\n{tb}")
+
 
