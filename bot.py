@@ -144,7 +144,7 @@ def fetch_from_alpha_vantage(ticker):
         # extract top headlines
         items = []
         for it in j.get("feed", [])[:3]:
-            items.append(it.get("title')".replace("'", "") if isinstance(it, dict) and it.get("title") else str(it))
+            items.append(it.get("title") if isinstance(it, dict) and it.get("title") else str(it))
         return items or ["No AlphaVantage news"]
     except Exception as e:
         return [f"AlphaVantage error: {e}"]
