@@ -2,8 +2,8 @@ name: Jackpot Bot
 
 on:
   schedule:
-    - cron: '0 6-21 * * 1-5' # Hourly 6 AM - 9 PM Mon-Fri
-  workflow_dispatch:
+    - cron: '0 6-21 * * 1-5' # Every hour from 6 AM to 9 PM, Monday to Friday
+  workflow_dispatch: # Allows manual run
 
 jobs:
   run-bot:
@@ -20,12 +20,12 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip uninstall -y numpy pandas
+          pip install -r requirements.txt --no-cache-dir
 
       - name: Run Jackpot Bot
         run: python bot.py
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
