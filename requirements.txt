@@ -1,7 +1,4 @@
-pandas
-yfinance
-python-telegram-bot
-beautifulsoup4
-feedparser
-textblob
-requests
+python-telegram-bot==20.4
+feedparser==6.0.10
+yfinance==0.2.44
+pandas==2.1.1
