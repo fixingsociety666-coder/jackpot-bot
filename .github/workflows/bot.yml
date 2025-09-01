@@ -1,15 +1,13 @@
-# bot.yml
 name: Jackpot Bot
 
 on:
   schedule:
-    - cron: '0 6-21 * * 1-5' # Every hour from 6 AM to 9 PM, Monday to Friday
-  workflow_dispatch: # Allows manual run
+    - cron: '0 6-21 * * 1-5' # Hourly 6 AM - 9 PM Mon-Fri
+  workflow_dispatch:
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
@@ -17,17 +15,17 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: 3.11  # Latest stable supported version
+          python-version: 3.11
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install yfinance pandas python-telegram-bot feedparser requests
+          pip install -r requirements.txt
 
       - name: Run Jackpot Bot
         run: python bot.py
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
-          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
