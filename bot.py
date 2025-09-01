@@ -17,7 +17,7 @@ import feedparser
 # ---------------------------
 TICKER_CSV = "tickers.csv"
 
-# Read secrets from env (preferred). If you truly want hardcoded keys, replace the os.getenv(...) below.
+# Read secrets from env (preferred).
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
@@ -83,6 +83,7 @@ def safe_request_text(url, params=None, headers=None, timeout=8):
 # ---------------------------
 # News fetchers (APIs, RSS, scraping)
 # Each returns a list of short strings (headlines/snippets) or an error string list
+# (kept as in original)
 # ---------------------------
 
 def fetch_from_barchart(ticker):
@@ -214,6 +215,9 @@ def fetch_from_barrons_rss():
         return [f"Barrons error: {e}"]
 
 def fetch_from_yahoo_per_ticker(ticker):
+    """
+    Returns list where first item is "Price: <value>" when available.
+    """
     try:
         url = "https://query1.finance.yahoo.com/v7/finance/quote"
         params = {"symbols": ticker}
@@ -221,14 +225,19 @@ def fetch_from_yahoo_per_ticker(ticker):
         q = j.get("quoteResponse", {}).get("result", [{}])[0]
         snippets = []
         if q:
-            snippets.append(f"Price: {q.get('regularMarketPrice')}")
+            price = q.get("regularMarketPrice")
+            snippets.append(f"Price: {price}")
             if q.get("longName"):
                 snippets.append(q.get("longName"))
-        page = safe_request_text(f"https://finance.yahoo.com/quote/{ticker}")
-        soup = BeautifulSoup(page, "html.parser")
-        headlines = [a.get_text(strip=True) for a in soup.select("h3 a")] or []
-        if headlines:
-            snippets.extend(headlines[:3])
+        # minimal headlines (not used in Telegram)
+        try:
+            page = safe_request_text(f"https://finance.yahoo.com/quote/{ticker}")
+            soup = BeautifulSoup(page, "html.parser")
+            headlines = [a.get_text(strip=True) for a in soup.select("h3 a")] or []
+            if headlines:
+                snippets.extend(headlines[:3])
+        except Exception:
+            pass
         return snippets or ["No Yahoo data"]
     except Exception as e:
         return [f"Yahoo error: {e}"]
@@ -272,17 +281,18 @@ def fetch_news_for_ticker(t):
 
 # ---------------------------
 # ChatGPT sanity check (OpenAI)
+# - returns a dict (if parseable) with keys: action_ok, trailing_pct, offset_pct, note
 # ---------------------------
 def chatgpt_sanity(signals_for_ticker, headlines):
     if not OPENAI_API_KEY:
         return "ChatGPT skipped (OPENAI_API_KEY not set)"
     try:
+        # Request trailing% and offset% instead of TP/SL
         prompt = (
-            "You are a sober financial assistant. For each ticker below, "
-            "answer in 2-4 sentences whether the suggested action seems reasonable "
-            "given the headlines. If reasonable, provide a suggested Take Profit and Stop Loss (as percentages), "
-            "and one short risk note. Output as JSON with keys: action_ok(bool), tp_pct, sl_pct, note.\n\n"
-            f"Ticker data: {json.dumps(signals_for_ticker)}\n\nHeadlines: {json.dumps(headlines[:6])}"
+            "You are a sober financial assistant. For the ticker below, given headlines and price context, "
+            "answer in JSON with keys: action_ok(bool), trailing_pct(number), offset_pct(number), note(str).\n\n"
+            f"Ticker data: {json.dumps(signals_for_ticker)}\n\nHeadlines: {json.dumps(headlines[:12])}\n\n"
+            "Return only a single JSON object."
         )
 
         payload = {
@@ -312,18 +322,17 @@ def chatgpt_sanity(signals_for_ticker, headlines):
         return f"ChatGPT error: {e}"
 
 # ---------------------------
-# Bot fallback scoring (always runs)
+# Bot fallback scoring (always runs) -> now returns trailing_pct and offset_pct
 # ---------------------------
-def bot_fallback_score_and_tp_sl(headlines):
+def bot_fallback_score_and_trailing_offset(headlines):
     """
     Always-run fallback algorithm:
     - simple keyword sentiment across headlines
     - base score in [0,1]
-    - map to action, produce bot TP (aggressive) and SL (conservative)
+    - map to action, produce bot trailing% (aggressive) and offset% (conservative)
     """
     text = " ".join([str(h).lower() for h in headlines])
     if not text.strip():
-        # no data: neutral
         score = 0.5
     else:
         buy_keywords = ["upgrade", "buy", "strong buy", "outperform", "beats", "beat", "surge", "gain", "record"]
@@ -332,13 +341,9 @@ def bot_fallback_score_and_tp_sl(headlines):
         sell_hits = sum(text.count(k) for k in sell_keywords)
         total = buy_hits + sell_hits
         if total == 0:
-            # neutral baseline but slightly biased to 0.5
             score = 0.5
         else:
-            # scale to [0,1] where buys increase score
             score = float(buy_hits) / float(total)
-
-        # blend with small random to avoid ties and add variety
         score = max(0.0, min(1.0, round(0.85*score + 0.15*float(np.random.rand()), 3)))
 
     # Map to actions
@@ -353,33 +358,74 @@ def bot_fallback_score_and_tp_sl(headlines):
     else:
         action = "HOLD"
 
-    # Bot-suggested TP/SL logic (always available)
-    # TP: larger for higher score, SL: smaller for higher score
-    tp_pct = round( (0.5 + score*2.5) * 10, 2 )  # roughly maps score->TP in a wider scale
-    sl_pct = round( max(0.5, (1.2 - score)*5 ), 2 )  # maps inverse to score
-    return {"score": score, "action": action, "tp_pct": tp_pct, "sl_pct": sl_pct}
+    # Bot-suggested trailing% and offset% logic
+    # trailing_pct: larger for stronger conviction; offset_pct: smaller for stronger conviction
+    trailing_pct = round(2.0 + score * 18.0, 2)   # maps score 0->2% to 1->20%-ish
+    offset_pct = round(max(0.5, (1.2 - score) * 6.0), 2)  # maps inverse to score
+    return {"score": score, "action": action, "trailing_pct": trailing_pct, "offset_pct": offset_pct}
 
 # ---------------------------
 # DeepSeek integration (optional, may fail)
+# We'll use a chat-completions style HTTP call to DeepSeek if DEEPSEEK_API_KEY is present.
+# Request JSON with trailing_pct and offset_pct keys.
 # ---------------------------
 def call_deepseek(ticker, headlines):
-    """
-    Example DeepSeek call. Replace endpoint/path if DeepSeek provides different API.
-    Returns dict or error-string.
-    """
     if not DEEPSEEK_API_KEY:
         return "DeepSeek skipped (no API key)"
     try:
-        # hypothetical endpoint - adjust if actual DeepSeek endpoint is different
-        url = "https://api.deepseek.com/analyze"
-        payload = {"api_key": DEEPSEEK_API_KEY, "ticker": ticker, "news": headlines[:20]}
-        r = requests.post(url, json=payload, timeout=15)
+        # Compose prompt asking for trailing_pct and offset_pct as JSON
+        prompt = (
+            "You are DeepSeek-like financial assistant. Given the ticker and headlines, "
+            "return a single JSON object with keys: recommendation (STRONG BUY/STRONG SELL/BUY/SELL/HOLD), "
+            "score (0-1), trailing_pct (number), offset_pct (number), note (string).\n\n"
+            f"Ticker: {ticker}\nHeadlines: {json.dumps(headlines[:20])}\n\nReturn only JSON."
+        )
+        # Many DeepSeek integrations are OpenAI-compatible: try POST to deepseek chat completions endpoint
+        url = "https://api.deepseek.com/v1/chat/completions"
+        payload = {
+            "model": "deepseek-chat",
+            "messages": [
+                {"role": "system", "content": "You are DeepSeek financial assistant."},
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": 0.0,
+            "max_tokens": 300
+        }
+        headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
+        r = requests.post(url, json=payload, headers=headers, timeout=25)
         r.raise_for_status()
-        j = r.json()
-        # expect something like: {"score":0.87, "recommendation":"BUY", "take_profit":20, "stop_loss":5}
-        return j
+        out = r.json()
+        # find content
+        content = out.get("choices", [{}])[0].get("message", {}).get("content", "")
+        if not content:
+            # some providers return top-level text
+            content = out.get("choices", [{}])[0].get("text", "")
+        # parse JSON
+        start = content.find("{")
+        end = content.rfind("}")
+        if start != -1 and end != -1:
+            data = json.loads(content[start:end+1])
+            return data
+        # otherwise return raw content
+        return content
     except Exception as e:
         return f"DeepSeek error: {e}"
+
+# ---------------------------
+# Get live price helper (Yahoo)
+# ---------------------------
+def get_live_price_yahoo(ticker):
+    try:
+        url = "https://query1.finance.yahoo.com/v7/finance/quote"
+        params = {"symbols": ticker}
+        j = safe_request_json(url, params=params)
+        q = j.get("quoteResponse", {}).get("result", [{}])[0]
+        price = q.get("regularMarketPrice")
+        if price is None:
+            return None
+        return float(price)
+    except Exception:
+        return None
 
 # ---------------------------
 # Main
@@ -401,7 +447,7 @@ def main():
     os.makedirs("signals", exist_ok=True)
     os.makedirs("news", exist_ok=True)
 
-    # 1) Generate initial signals list (we'll always compute bot fallback per ticker)
+    # 1) Generate initial signals list
     signals_list = [{"Ticker": t} for t in tickers]
 
     # 2) Parallel news fetching
@@ -410,7 +456,7 @@ def main():
         for t, snippets in executor.map(fetch_news_for_ticker, tickers):
             news_store[t] = snippets
 
-    # save news snapshot
+    # save news snapshot (kept for debugging/history)
     news_file = f"news/latest_news_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     with open(news_file, "w") as f:
         json.dump(news_store, f, indent=2)
@@ -430,49 +476,47 @@ def main():
             else:
                 headlines_flat.append(str(arr))
 
-        # ALWAYS compute bot fallback
-        bot = bot_fallback_score_and_tp_sl(headlines_flat)
+        # ALWAYS compute bot fallback (trailing/offset)
+        bot = bot_fallback_score_and_trailing_offset(headlines_flat)
+
+        # get live price
+        price = get_live_price_yahoo(t)
 
         # try DeepSeek
         try:
             ds = call_deepseek(t, headlines_flat)
             if isinstance(ds, dict):
-                # if deepseek returned its own score/TP/SL, keep them
                 ds_score = ds.get("score")
                 ds_action = ds.get("recommendation") or ds.get("action") or None
-                ds_tp = ds.get("take_profit") or ds.get("tp") or ds.get("TP")
-                ds_sl = ds.get("stop_loss") or ds.get("sl") or ds.get("SL")
+                ds_trailing = ds.get("trailing_pct") or ds.get("trailing") or ds.get("trailingPercent")
+                ds_offset = ds.get("offset_pct") or ds.get("offset") or ds.get("offsetPercent")
             else:
-                ds_score = None
-                ds_action = None
-                ds_tp = None
-                ds_sl = None
+                ds_score = None; ds_action = None; ds_trailing = None; ds_offset = None
         except Exception as e:
             ds = f"DeepSeek exception: {e}"
-            ds_score = ds_action = ds_tp = ds_sl = None
+            ds_score = ds_action = ds_trailing = ds_offset = None
 
         # try ChatGPT sanity
         try:
-            gpt = chatgpt_sanity({"Ticker": t, "BotAction": bot["action"], "BotScore": bot["score"]}, headlines_flat)
-            # if gpt returned dict parse keys
+            gpt = chatgpt_sanity({"Ticker": t, "BotAction": bot["action"], "BotScore": bot["score"], "Price": price}, headlines_flat)
             if isinstance(gpt, dict):
                 gpt_ok = gpt.get("action_ok")
-                gpt_tp = gpt.get("tp_pct") or gpt.get("tp") or None
-                gpt_sl = gpt.get("sl_pct") or gpt.get("sl") or None
+                gpt_trailing = gpt.get("trailing_pct") or gpt.get("trailing")
+                gpt_offset = gpt.get("offset_pct") or gpt.get("offset")
                 gpt_note = gpt.get("note")
             else:
-                gpt_ok = None; gpt_tp = None; gpt_sl = None; gpt_note = str(gpt)
+                gpt_ok = None; gpt_trailing = None; gpt_offset = None; gpt_note = str(gpt)
         except Exception as e:
             gpt = f"ChatGPT exception: {e}"
-            gpt_ok = None; gpt_tp = None; gpt_sl = None; gpt_note = str(e)
+            gpt_ok = None; gpt_trailing = None; gpt_offset = None; gpt_note = str(e)
 
-        # Consolidate: Always include bot TP/SL; include DeepSeek/GPT where available
         final = {
             "Ticker": t,
-            "Bot": {"score": bot["score"], "action": bot["action"], "tp_pct": bot["tp_pct"], "sl_pct": bot["sl_pct"]},
-            "DeepSeek": {"raw": ds, "score": ds_score, "action": ds_action, "tp": ds_tp, "sl": ds_sl},
-            "GPT": {"raw": gpt, "ok": gpt_ok, "tp": gpt_tp, "sl": gpt_sl, "note": gpt_note},
-            "Headlines": headlines_flat[:20]  # limit saving
+            "Price": price,
+            "Bot": {"score": bot["score"], "action": bot["action"], "trailing_pct": bot["trailing_pct"], "offset_pct": bot["offset_pct"]},
+            "DeepSeek": {"raw": ds, "score": ds_score, "action": ds_action, "trailing_pct": ds_trailing, "offset_pct": ds_offset},
+            "GPT": {"raw": gpt, "ok": gpt_ok, "trailing_pct": gpt_trailing, "offset_pct": gpt_offset, "note": gpt_note},
+            "Headlines": headlines_flat[:20]
         }
         final_signals.append(final)
 
@@ -481,10 +525,11 @@ def main():
     for f in final_signals:
         row = {
             "Ticker": f["Ticker"],
+            "Price": f.get("Price"),
             "BotScore": f["Bot"]["score"],
             "BotAction": f["Bot"]["action"],
-            "Bot_TP_pct": f["Bot"]["tp_pct"],
-            "Bot_SL_pct": f["Bot"]["sl_pct"],
+            "Bot_Trailing_pct": f["Bot"]["trailing_pct"],
+            "Bot_Offset_pct": f["Bot"]["offset_pct"],
             "DeepSeek_raw": json.dumps(f["DeepSeek"]["raw"]) if f["DeepSeek"]["raw"] else "",
             "GPT_raw": json.dumps(f["GPT"]["raw"]) if f["GPT"]["raw"] else ""
         }
@@ -507,32 +552,42 @@ def main():
         key=lambda x: order_priority.get(x["Bot"]["action"], 99)
     )
 
-    for f in final_signals_sorted:
-        t = f["Ticker"]
-        bot = f["Bot"]
-        ds = f["DeepSeek"]
-        gpt = f["GPT"]
+    if not final_signals_sorted:
+        lines.append("No STRONG BUY or STRONG SELL signals this run.")
+    else:
+        for f in final_signals_sorted:
+            t = f["Ticker"]
+            bot = f["Bot"]
+            ds = f["DeepSeek"]
+            gpt = f["GPT"]
+            price = f.get("Price")
 
-        icon = "💎" if bot["action"] == "STRONG BUY" else "💀"
+            icon = "🟢" if bot["action"] == "STRONG BUY" else "🔴"
 
-        lines.append(f"{icon} {t}: {bot['action']} (score {bot['score']})")
-        lines.append(f"   🛠 Bot → TP: {bot['tp_pct']}% | SL: {bot['sl_pct']}%")
+            price_str = f"${price:.2f}" if isinstance(price, (int, float)) else "Price N/A"
+            lines.append(f"{icon} {t} — {bot['action']} (bot score {bot['score']}) — {price_str}")
 
-        # DeepSeek info
-        if isinstance(ds["raw"], dict):
-            lines.append(f"   🔍 DeepSeek → score: {ds.get('score')} action: {ds.get('action')} "
-                         f"TP: {ds.get('tp')}% SL: {ds.get('sl')}%")
-        else:
-            lines.append(f"   🔍 DeepSeek → {ds['raw']}")
+            # Bot fallback suggestions (always present)
+            lines.append(f"   🛠 Bot → Trailing: {bot['trailing_pct']}% | Offset: {bot['offset_pct']}%")
 
-        # GPT info
-        if isinstance(gpt["raw"], dict):
-            lines.append(f"   🤖 GPT → ok: {gpt.get('ok')} TP: {gpt.get('tp')}% SL: {gpt.get('sl')}% "
-                         f"— {gpt.get('note')}")
-        else:
-            lines.append(f"   🤖 GPT → {gpt['raw']}")
+            # DeepSeek suggestions
+            if isinstance(ds["raw"], dict):
+                ds_tr = ds.get("trailing_pct")
+                ds_off = ds.get("offset_pct")
+                lines.append(f"   🔍 DeepSeek → rec: {ds.get('action')} | trailing: {ds_tr}% | offset: {ds_off}%")
+            else:
+                # ds['raw'] might be error string
+                lines.append(f"   🔍 DeepSeek → {ds['raw']}")
 
-        lines.append("")  # separator
+            # ChatGPT suggestions
+            if isinstance(gpt["raw"], dict):
+                g_tr = gpt.get("trailing_pct")
+                g_off = gpt.get("offset_pct")
+                lines.append(f"   🤖 GPT → ok: {gpt.get('ok')} | trailing: {g_tr}% | offset: {g_off}% — {gpt.get('note')}")
+            else:
+                lines.append(f"   🤖 GPT → {gpt['raw']}")
+
+            lines.append("")  # separator
 
     message = "\n".join(lines)
     send_telegram(message)
@@ -547,3 +602,4 @@ if __name__ == "__main__":
         tb = traceback.format_exc()
         print(tb)
         send_telegram(f"🚨 Bot crashed:\n{tb}")
+
