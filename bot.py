@@ -43,13 +43,11 @@ def send_telegram(text):
         print("Telegram not configured; skipping send.")
         return
 
-    # split into chunks under TELEGRAM_MAX
     chunks = []
     while text:
         if len(text) <= TELEGRAM_MAX:
             chunks.append(text)
             break
-        # find safe split (newline)
         split_at = text.rfind("\n", 0, TELEGRAM_MAX)
         if split_at <= 0:
             split_at = TELEGRAM_MAX
@@ -63,7 +61,7 @@ def send_telegram(text):
                 data={"chat_id": TELEGRAM_CHAT_ID, "text": chunk},
                 timeout=15
             )
-            time.sleep(0.35)  # polite pacing
+            time.sleep(0.35)
         except Exception as e:
             print("Failed to send Telegram chunk:", e)
 
@@ -78,10 +76,8 @@ def safe_request_text(url, params=None, headers=None, timeout=8):
     return resp.text
 
 # ---------------------------
-# News fetchers (APIs first, then RSS, then scraping fallback)
-# Each returns a list of short strings (headlines/snippets) or an error string
+# News fetchers
 # ---------------------------
-
 def fetch_from_barchart(ticker):
     if BARCHART_API_KEY:
         try:
@@ -232,10 +228,9 @@ def fetch_from_yahoo_per_ticker(ticker):
         return [f"Yahoo error: {e}"]
 
 # ---------------------------
-# Parallel news fetching helper
+# Parallel news fetching
 # ---------------------------
 def fetch_news_for_ticker(t):
-    """Fetch news from all sources for a single ticker safely."""
     snippets = {}
     try:
         snippets["Yahoo"] = fetch_from_yahoo_per_ticker(t)
@@ -269,7 +264,7 @@ def fetch_news_for_ticker(t):
     return t, snippets
 
 # ---------------------------
-# ChatGPT sanity check (OpenAI)
+# ChatGPT sanity check
 # ---------------------------
 def chatgpt_sanity(signals_for_ticker, headlines):
     if not OPENAI_API_KEY:
@@ -334,10 +329,12 @@ def main():
     # 1) Generate signals
     for t in tickers:
         score = round(float(np.random.rand()), 2)
-        if score > 0.72:
+        if score > 0.85:
             action = "STRONG BUY"
         elif score > 0.6:
             action = "BUY"
+        elif score < 0.15:
+            action = "STRONG SELL"
         elif score < 0.28:
             action = "SELL"
         else:
@@ -363,7 +360,7 @@ def main():
     sanity_results = {}
     for rec in signals_list:
         ticker = rec["Ticker"]
-        if rec["Action"] in ("BUY", "STRONG BUY"):
+        if rec["Action"] in ("BUY", "STRONG BUY", "SELL", "STRONG SELL"):
             try:
                 signal_obj = {"Ticker": ticker, "Action": rec["Action"], "Score": rec["Score"]}
                 headlines_flat = []
@@ -383,8 +380,23 @@ def main():
     lines = []
     lines.append(f"📊 Jackpot Bot run at {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}\n")
     for rec in signals_list:
-        t = rec["Ticker"]
-        lines.append(f"➡️ {t}: {rec['Action']} (score {rec['Score']})")
+        t = rec['Ticker']
+        action = rec['Action']
+        score = rec['Score']
+
+        # Visual differentiation
+        if action == "STRONG BUY":
+            lines.append(f"🔥➡️ {t}: {action} (score {score}) — HIGH ALERT")
+        elif action == "BUY":
+            lines.append(f"✅➡️ {t}: {action} (score {score})")
+        elif action == "STRONG SELL":
+            lines.append(f"💀➡️ {t}: {action} (score {score}) — DANGER")
+        elif action == "SELL":
+            lines.append(f"⚠️➡️ {t}: {action} (score {score})")
+        else:  # HOLD
+            lines.append(f"⏸️➡️ {t}: {action} (score {score})")
+
+        # Headlines
         snippets = news_store.get(t, {})
         for src in ["Polygon","Barchart","Finnhub","Yahoo","MotleyFool","SeekingAlpha","MarketWatch","Barrons","TipRanks","CNBC","AlphaVantage"]:
             if src in snippets:
@@ -397,6 +409,8 @@ def main():
                 else:
                     excerpt = str(s)[:120]
                 lines.append(f"   📰 {src}: {excerpt}")
+
+        # GPT sanity
         if t in sanity_results:
             fr = sanity_results[t]
             if isinstance(fr, dict):
