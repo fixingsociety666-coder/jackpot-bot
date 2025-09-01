@@ -2,7 +2,7 @@ name: Jackpot Bot
 
 on:
   schedule:
-    - cron: '0 6-21 * * 1-5' # Every hour from 6 AM to 9 PM, Monday to Friday
+    - cron: '0 6,18 * * 1-5' # Every hour from 6 AM to 9 PM, Monday to Friday
   workflow_dispatch: # manual trigger
 
 jobs:
