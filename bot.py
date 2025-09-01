@@ -10,6 +10,7 @@ import pandas as pd
 import numpy as np
 from bs4 import BeautifulSoup
 import feedparser
+from concurrent.futures import ThreadPoolExecutor  # added for parallel news fetching
 
 # ---------------------------
 # Config / Environment names
@@ -82,21 +83,18 @@ def safe_request_text(url, params=None, headers=None, timeout=8):
 # ---------------------------
 
 def fetch_from_barchart(ticker):
-    """Prefer Barchart API if key provided; else attempt scraping overview page."""
     if BARCHART_API_KEY:
         try:
             url = "https://marketdata.websol.barchart.com/getNews.json"
             params = {"apikey": BARCHART_API_KEY, "symbols": ticker}
             j = safe_request_json(url, params=params)
             items = []
-            # Barchart news response can vary; try to extract titles
             for it in j.get("news", [])[:5]:
                 title = it.get("headline") or it.get("title") or str(it)
                 items.append(title)
             return items or ["No Barchart news"]
         except Exception as e:
             return [f"Barchart API error: {e}"]
-    # fallback: scrape barchart page (lightweight)
     try:
         url = f"https://www.barchart.com/stocks/quotes/{ticker}/news"
         text = safe_request_text(url)
@@ -122,7 +120,6 @@ def fetch_from_finnhub(ticker):
     if not FINNHUB_API_KEY:
         return ["Finnhub not configured"]
     try:
-        # short window - adjust dates as you like
         today = datetime.utcnow().date()
         frm = (today.replace(year=today.year - 1)).isoformat()
         to = today.isoformat()
@@ -141,7 +138,6 @@ def fetch_from_alpha_vantage(ticker):
         url = "https://www.alphavantage.co/query"
         params = {"function": "NEWS_SENTIMENT", "tickers": ticker, "apikey": ALPHAVANTAGE_KEY}
         j = safe_request_json(url, params=params)
-        # extract top headlines
         items = []
         for it in j.get("feed", [])[:3]:
             items.append(it.get("title") if isinstance(it, dict) and it.get("title") else str(it))
@@ -150,14 +146,12 @@ def fetch_from_alpha_vantage(ticker):
         return [f"AlphaVantage error: {e}"]
 
 def fetch_from_seekingalpha_rss():
-    """General Seeking Alpha market news RSS (not per-ticker)."""
     try:
-        # try a few possible SeekingAlpha feed URLs
         candidate_feeds = [
             "https://seekingalpha.com/market-news.rss",
             "https://seekingalpha.com/feed.xml",
             "https://seekingalpha.com/market-news.xml",
-            "https://seekingalpha.com/author/feeds"  # fallback
+            "https://seekingalpha.com/author/feeds"
         ]
         for feed in candidate_feeds:
             try:
@@ -180,17 +174,14 @@ def fetch_from_motleyfool_rss():
         return [f"MotleyFool error: {e}"]
 
 def fetch_from_tipranks_via_apify():
-    """Use Apify actor to fetch TipRanks top picks (requires APIFY_API_TOKEN)"""
     if not APIFY_API_TOKEN:
         return ["TipRanks (Apify) not configured"]
     try:
-        # This is an example actor id used earlier in conversation; if you have a different actor use its endpoint.
         api_url = f"https://api.apify.com/v2/acts/scraped~analysts-top-rated-stocks-tipranks/runs"
         params = {"token": APIFY_API_TOKEN, "waitForFinish": "true"}
         r = requests.post(api_url, params=params, timeout=30)
         r.raise_for_status()
         run = r.json()
-        # After run completes, results may land in dataset: fetch dataset items (this may vary)
         dataset_url = run.get("defaultDatasetId") and f"https://api.apify.com/v2/datasets/{run['defaultDatasetId']}/items?token={APIFY_API_TOKEN}"
         if dataset_url:
             d = requests.get(dataset_url, timeout=20).json()
@@ -221,19 +212,16 @@ def fetch_from_barrons_rss():
         return [f"Barrons error: {e}"]
 
 def fetch_from_yahoo_per_ticker(ticker):
-    # Prefer JSON quote endpoint for price/news summary
     try:
         url = "https://query1.finance.yahoo.com/v7/finance/quote"
         params = {"symbols": ticker}
         j = safe_request_json(url, params=params)
         q = j.get("quoteResponse", {}).get("result", [{}])[0]
-        # collect short fields
         snippets = []
         if q:
             snippets.append(f"Quote: {q.get('regularMarketPrice')}")
             if q.get("longName"):
                 snippets.append(q.get("longName"))
-        # fallback to page scrape for news headline snippets
         page = safe_request_text(f"https://finance.yahoo.com/quote/{ticker}")
         soup = BeautifulSoup(page, "html.parser")
         headlines = [a.get_text(strip=True) for a in soup.select("h3 a")] or []
@@ -244,16 +232,48 @@ def fetch_from_yahoo_per_ticker(ticker):
         return [f"Yahoo error: {e}"]
 
 # ---------------------------
+# Parallel news fetching helper
+# ---------------------------
+def fetch_news_for_ticker(t):
+    """Fetch news from all sources for a single ticker safely."""
+    snippets = {}
+    try:
+        snippets["Yahoo"] = fetch_from_yahoo_per_ticker(t)
+    except Exception as e:
+        snippets["Yahoo"] = [f"Yahoo error wrapper: {e}"]
+
+    snippets["Barchart"] = fetch_from_barchart(t)
+    snippets["Polygon"] = fetch_from_polygon(t)
+    snippets["Finnhub"] = fetch_from_finnhub(t)
+    snippets["AlphaVantage"] = fetch_from_alpha_vantage(t)
+    snippets["MarketWatch"] = fetch_from_marketwatch(t)
+
+    try:
+        url = f"https://www.cnbc.com/quotes/{t}"
+        txt = safe_request_text(url)
+        soup = BeautifulSoup(txt, "html.parser")
+        cnbc_head = [a.get_text(strip=True) for a in soup.select("a.Card-title")][:3] or []
+        snippets["CNBC"] = cnbc_head or ["No CNBC headlines"]
+    except Exception as e:
+        snippets["CNBC"] = [f"CNBC error: {e}"]
+
+    try:
+        snippets["SeekingAlpha"] = fetch_from_seekingalpha_rss()
+    except Exception as e:
+        snippets["SeekingAlpha"] = [f"SeekingAlpha wrapper error: {e}"]
+
+    snippets["MotleyFool"] = fetch_from_motleyfool_rss()
+    snippets["Barrons"] = fetch_from_barrons_rss()
+    snippets["TipRanks"] = fetch_from_tipranks_via_apify()
+
+    return t, snippets
+
+# ---------------------------
 # ChatGPT sanity check (OpenAI)
 # ---------------------------
 def chatgpt_sanity(signals_for_ticker, headlines):
-    """
-    Sends a compact prompt to OpenAI to sanity-check a ticker.
-    Returns the model's plain-text response or an error string.
-    """
     if not OPENAI_API_KEY:
         return "ChatGPT skipped (OPENAI_API_KEY not set)"
-
     try:
         prompt = (
             "You are a sober financial assistant. For each ticker below, "
@@ -277,9 +297,7 @@ def chatgpt_sanity(signals_for_ticker, headlines):
         r.raise_for_status()
         out = r.json()
         answer = out["choices"][0]["message"]["content"].strip()
-        # try to parse JSON out of answer if user asked for JSON — but keep as string if parsing fails
         try:
-            # find first '{' and parse JSON-ish substring
             start = answer.find("{")
             end = answer.rfind("}")
             if start != -1 and end != -1:
@@ -310,11 +328,10 @@ def main():
     results = {}
     signals_list = []
 
-    # create output folders
     os.makedirs("signals", exist_ok=True)
     os.makedirs("news", exist_ok=True)
 
-    # 1) Generate signals (placeholder logic; replace with real model if needed)
+    # 1) Generate signals
     for t in tickers:
         score = round(float(np.random.rand()), 2)
         if score > 0.72:
@@ -327,75 +344,30 @@ def main():
             action = "HOLD"
         signals_list.append({"Ticker": t, "Score": score, "Action": action})
 
-    # Save raw signals
     signals_df = pd.DataFrame(signals_list)
     signals_file = f"signals/trading_signals_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
     signals_df.to_csv(signals_file, index=False)
 
-    # 2) News fetching per ticker (call each source; continue on error)
+    # 2) Parallel news fetching
     news_store = {}
-    
-from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=12) as executor:
+        results = executor.map(fetch_news_for_ticker, tickers)
+        for t, snippets in results:
+            news_store[t] = snippets
 
-def fetch_news_for_ticker(t):
-    snippets = {}
-    snippets["Yahoo"] = fetch_from_yahoo_per_ticker(t)
-    snippets["Barchart"] = fetch_from_barchart(t)
-    snippets["Polygon"] = fetch_from_polygon(t)
-    snippets["Finnhub"] = fetch_from_finnhub(t)
-    snippets["AlphaVantage"] = fetch_from_alpha_vantage(t)
-    snippets["MarketWatch"] = fetch_from_marketwatch(t)
-    # add other sources...
-    return t, snippets
-
-with ThreadPoolExecutor(max_workers=15) as executor:
-    results = list(executor.map(fetch_news_for_ticker, tickers))
-news_store = dict(results)
-
-        # CNBC (scrape simple)
-        try:
-            url = f"https://www.cnbc.com/quotes/{t}"
-            txt = safe_request_text(url)
-            soup = BeautifulSoup(txt, "html.parser")
-            cnbc_head = [a.get_text(strip=True) for a in soup.select("a.Card-title")][:3] or []
-            snippets["CNBC"] = cnbc_head or ["No CNBC headlines"]
-        except Exception as e:
-            snippets["CNBC"] = [f"CNBC error: {e}"]
-
-        # Seeking Alpha (general feed)
-        try:
-            snippets["SeekingAlpha"] = fetch_from_seekingalpha_rss()
-        except Exception as e:
-            snippets["SeekingAlpha"] = [f"SeekingAlpha wrapper error: {e}"]
-
-        # Motley Fool RSS
-        snippets["MotleyFool"] = fetch_from_motleyfool_rss()
-
-        # Barrons
-        snippets["Barrons"] = fetch_from_barrons_rss()
-
-        # TipRanks via Apify (if configured)
-        snippets["TipRanks"] = fetch_from_tipranks_via_apify()
-
-        # Store
-        news_store[t] = snippets
-
-    # save news file
     news_file = f"news/latest_news_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     with open(news_file, "w") as f:
         json.dump(news_store, f, indent=2)
 
-    # 3) ChatGPT sanity check for candidates where action is BUY/STRONG BUY
+    # 3) ChatGPT sanity check
     sanity_results = {}
     for rec in signals_list:
         ticker = rec["Ticker"]
         if rec["Action"] in ("BUY", "STRONG BUY"):
             try:
-                # prepare compact view
                 signal_obj = {"Ticker": ticker, "Action": rec["Action"], "Score": rec["Score"]}
                 headlines_flat = []
                 for src, arr in news_store.get(ticker, {}).items():
-                    # flatten if arr is dict/json
                     if isinstance(arr, list):
                         headlines_flat.extend([str(x) for x in arr[:4]])
                     elif isinstance(arr, dict):
@@ -407,36 +379,31 @@ news_store = dict(results)
             except Exception as e:
                 sanity_results[ticker] = f"Sanity check error: {e}"
 
-    # 4) Build Telegram message (aggregate)
+    # 4) Build Telegram message
     lines = []
     lines.append(f"📊 Jackpot Bot run at {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}\n")
     for rec in signals_list:
         t = rec["Ticker"]
         lines.append(f"➡️ {t}: {rec['Action']} (score {rec['Score']})")
-        # include first headline per source to keep message shorter
         snippets = news_store.get(t, {})
         for src in ["Polygon","Barchart","Finnhub","Yahoo","MotleyFool","SeekingAlpha","MarketWatch","Barrons","TipRanks","CNBC","AlphaVantage"]:
             if src in snippets:
                 s = snippets[src]
-                # represent succinctly
                 if isinstance(s, list):
                     excerpt = s[0] if s else "no headlines"
                 elif isinstance(s, dict):
-                    # try first value
                     v = next(iter(s.values()), "no headlines")
-                    excerpt = (v[:120] if isinstance(v, str) else str(v)) 
+                    excerpt = (v[:120] if isinstance(v, str) else str(v))
                 else:
                     excerpt = str(s)[:120]
                 lines.append(f"   📰 {src}: {excerpt}")
-        # add ChatGPT feedback if present
         if t in sanity_results:
             fr = sanity_results[t]
             if isinstance(fr, dict):
-                # pretty-print predicted TP/SL and note if model returned JSON
                 lines.append(f"   🤖 GPT: ok={fr.get('action_ok')}, tp={fr.get('tp_pct')}%, sl={fr.get('sl_pct')}% — {fr.get('note')}")
             else:
                 lines.append(f"   🤖 GPT: {fr}")
-        lines.append("")  # blank line
+        lines.append("")
 
     lines.append(f"📂 Signals saved: {signals_file}")
     lines.append(f"📂 News saved: {news_file}")
@@ -445,6 +412,7 @@ news_store = dict(results)
     send_telegram(message)
 
     print("✅ Run complete. Telegram sent (if configured).")
+
 if __name__ == "__main__":
     try:
         main()
@@ -452,5 +420,3 @@ if __name__ == "__main__":
         tb = traceback.format_exc()
         print(tb)
         send_telegram(f"🚨 Bot crashed:\n{tb}")
-
-
