@@ -1,3 +1,4 @@
+# bot.yml
 name: Jackpot Bot
 
 on:
@@ -8,6 +9,7 @@ on:
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
@@ -15,15 +17,17 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: 3.11
+          python-version: 3.11  # Latest stable supported version
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install yfinance pandas python-telegram-bot feedparser requests
 
       - name: Run Jackpot Bot
         run: python bot.py
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
