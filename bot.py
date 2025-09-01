@@ -1,173 +1,70 @@
 import os
-import requests
-from bs4 import BeautifulSoup
 import feedparser
-import pandas as pd
 import yfinance as yf
 from telegram import Bot
-from sentiment import analyze_sentiment
 
-# --- Telegram Setup ---
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+# Environment variables
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
 bot = Bot(token=TELEGRAM_TOKEN)
 
-# --- News Sources ---
-sources = {
-    "SeekingAlpha": "https://seekingalpha.com/market-news",
-    "MarketWatch": "https://www.marketwatch.com/latest-news",
-    "MotleyFool": "https://www.fool.com/market-news/",
-    "Barchart": "https://www.barchart.com/stocks/market-performance",
-    "YahooFinance": "https://finance.yahoo.com/most-active",
-    "TipRanks": "https://www.tipranks.com/stocks",
-    "Barrons": "https://www.barrons.com/market-data/stocks"
+# List of news RSS feeds / sources
+NEWS_SOURCES = {
+    "Seeking Alpha": "https://seekingalpha.com/market-news.rss",
+    "Motley Fool": "https://www.fool.com/feeds/all.xml",
+    "MarketWatch": "https://www.marketwatch.com/rss/topstories",
+    "Barchart": "https://www.barchart.com/rss/top-stocks.xml",
+    "TipsRank": "https://www.tipsranks.com/rss",
+    "Barron's": "https://www.barrons.com/xml/rss/1_2.xml",
+    "Yahoo Finance": "https://feeds.finance.yahoo.com/rss/2.0/headline?s=yhoo&region=US&lang=en-US"
 }
 
-# --- Fetch Functions for Each Source ---
-def fetch_yahoo():
-    stocks = []
-    try:
-        tables = pd.read_html(sources["YahooFinance"])
-        if tables:
-            df = tables[0].head(5)
-            for idx, row in df.iterrows():
-                symbol = row['Symbol']
-                price = float(str(row['Price (Intraday)']).replace(',',''))
-                sentiment_score = analyze_sentiment(f"{symbol} news")
-                stocks.append({
-                    "source": "YahooFinance",
-                    "symbol": symbol,
-                    "price": price,
-                    "tp": round(price * 1.04, 2),
-                    "sl": round(price * 0.98, 2),
-                    "sentiment": sentiment_score
-                })
-    except Exception as e:
-        print(f"YahooFinance error: {e}")
-    return stocks
+# Function to fetch latest news and extract stock symbols
+def fetch_stock_signals():
+    signals = []
+    for source_name, rss_url in NEWS_SOURCES.items():
+        feed = feedparser.parse(rss_url)
+        for entry in feed.entries[:5]:  # Get top 5 articles per source
+            title = entry.get("title", "")
+            link = entry.get("link", "")
+            # Extract ticker from title using yfinance (very basic)
+            words = title.split()
+            for word in words:
+                if word.isupper() and len(word) <= 5:
+                    try:
+                        stock = yf.Ticker(word)
+                        price = stock.info.get("regularMarketPrice", 0)
+                        signals.append({
+                            "source": source_name,
+                            "ticker": word,
+                            "title": title,
+                            "link": link,
+                            "price": price,
+                            "tp": round(price * 1.05, 2) if price else 0.0,  # Take Profit 5% above
+                            "sl": round(price * 0.97, 2) if price else 0.0   # Stop Loss 3% below
+                        })
+                    except:
+                        continue
+    return signals
 
-def fetch_seekingalpha():
-    stocks = []
-    try:
-        r = requests.get(sources["SeekingAlpha"])
-        soup = BeautifulSoup(r.text, "html.parser")
-        articles = soup.find_all("a", href=True)[:5]
-        for art in articles:
-            text = art.text.strip()
-            if text:
-                symbol = text.split()[0]
-                sentiment_score = analyze_sentiment(text)
-                stocks.append({"source":"SeekingAlpha","symbol":symbol,"price":0,"tp":0.0,"sl":0.0,"sentiment":sentiment_score})
-    except Exception as e:
-        print(f"SeekingAlpha error: {e}")
-    return stocks
-
-def fetch_marketwatch():
-    stocks = []
-    try:
-        r = requests.get(sources["MarketWatch"])
-        soup = BeautifulSoup(r.text, "html.parser")
-        articles = soup.select("a")[:5]
-        for art in articles:
-            text = art.text.strip()
-            if text:
-                symbol = text.split()[0]
-                sentiment_score = analyze_sentiment(text)
-                stocks.append({"source":"MarketWatch","symbol":symbol,"price":0,"tp":0.0,"sl":0.0,"sentiment":sentiment_score})
-    except Exception as e:
-        print(f"MarketWatch error: {e}")
-    return stocks
-
-def fetch_motleyfool():
-    stocks = []
-    try:
-        r = requests.get(sources["MotleyFool"])
-        soup = BeautifulSoup(r.text, "html.parser")
-        articles = soup.find_all("a")[:5]
-        for art in articles:
-            text = art.text.strip()
-            if text:
-                symbol = text.split()[0]
-                sentiment_score = analyze_sentiment(text)
-                stocks.append({"source":"MotleyFool","symbol":symbol,"price":0,"tp":0.0,"sl":0.0,"sentiment":sentiment_score})
-    except Exception as e:
-        print(f"MotleyFool error: {e}")
-    return stocks
-
-def fetch_barchart():
-    stocks = []
-    try:
-        r = requests.get(sources["Barchart"])
-        soup = BeautifulSoup(r.text, "html.parser")
-        articles = soup.find_all("a")[:5]
-        for art in articles:
-            text = art.text.strip()
-            if text:
-                symbol = text.split()[0]
-                sentiment_score = analyze_sentiment(text)
-                stocks.append({"source":"Barchart","symbol":symbol,"price":0,"tp":0.0,"sl":0.0,"sentiment":sentiment_score})
-    except Exception as e:
-        print(f"Barchart error: {e}")
-    return stocks
-
-def fetch_tipranks():
-    stocks = []
-    try:
-        r = requests.get(sources["TipRanks"])
-        soup = BeautifulSoup(r.text, "html.parser")
-        articles = soup.find_all("a")[:5]
-        for art in articles:
-            text = art.text.strip()
-            if text:
-                symbol = text.split()[0]
-                sentiment_score = analyze_sentiment(text)
-                stocks.append({"source":"TipRanks","symbol":symbol,"price":0,"tp":0.0,"sl":0.0,"sentiment":sentiment_score})
-    except Exception as e:
-        print(f"TipRanks error: {e}")
-    return stocks
-
-def fetch_barrons():
-    stocks = []
-    try:
-        r = requests.get(sources["Barrons"])
-        soup = BeautifulSoup(r.text, "html.parser")
-        articles = soup.find_all("a")[:5]
-        for art in articles:
-            text = art.text.strip()
-            if text:
-                symbol = text.split()[0]
-                sentiment_score = analyze_sentiment(text)
-                stocks.append({"source":"Barrons","symbol":symbol,"price":0,"tp":0.0,"sl":0.0,"sentiment":sentiment_score})
-    except Exception as e:
-        print(f"Barrons error: {e}")
-    return stocks
-
-# --- Aggregate all top stocks ---
-def fetch_top_stocks():
-    stocks = []
-    stocks.extend(fetch_yahoo())
-    stocks.extend(fetch_seekingalpha())
-    stocks.extend(fetch_marketwatch())
-    stocks.extend(fetch_motleyfool())
-    stocks.extend(fetch_barchart())
-    stocks.extend(fetch_tipranks())
-    stocks.extend(fetch_barrons())
-    return stocks
-
-# --- Telegram Notification ---
-def send_telegram_signal(stock):
-    message = f"💹 {stock['source']} Signal (BUY):\n"
-    message += f"Symbol: {stock['symbol']}\n"
-    message += f"Price: {stock['price']}\n"
-    message += f"TP: {stock['tp']}, SL: {stock['sl']}\n"
-    message += f"Sentiment Score: {stock['sentiment']}\n"
-    bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
-
-# --- Main ---
-def main():
-    top_stocks = fetch_top_stocks()
-    for stock in top_stocks:
-        send_telegram_signal(stock)
+# Send signals to Telegram
+def send_telegram_signals(signals):
+    for s in signals:
+        message = (
+            f"💹 {s['source']} Signal (BUY)\n"
+            f"{s['ticker']} - {s['title']}\n"
+            f"Link: {s['link']}\n"
+            f"Price: {s['price']}, TP: {s['tp']}, SL: {s['sl']}"
+        )
+        try:
+            bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+        except Exception as e:
+            print(f"Error sending Telegram message: {e}")
 
 if __name__ == "__main__":
-    main()
+    stock_signals = fetch_stock_signals()
+    if stock_signals:
+        send_telegram_signals(stock_signals)
+    else:
+        print("No signals found.")
