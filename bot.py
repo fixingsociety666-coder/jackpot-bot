@@ -1,87 +1,143 @@
 import os
 import pandas as pd
+import numpy as np
 import requests
-from telegram import Bot
+import json
 from datetime import datetime
 
-# --- ENV VARIABLES ---
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")  # for ChatGPT sanity check
+# =========================
+# Load portfolio
+# =========================
+df = pd.read_csv("sample_portfolio.csv")
 
-bot = Bot(token=TELEGRAM_TOKEN)
-
-# --- CSV TICKERS ---
-TICKER_CSV = "tickers.csv"  # Must exist in repo
-try:
-    df_tickers = pd.read_csv(TICKER_CSV)
-    tickers = df_tickers['Ticker'].dropna().tolist()
-except Exception as e:
-    bot.send_message(chat_id=TELEGRAM_CHAT_ID,
-                     text=f"❌ Error reading tickers.csv: {e}")
-    tickers = []
-
-# --- NEWS SOURCES ---
-NEWS_SOURCES = {
-    "MotleyFool": "https://api.mock-motleyfool.com/top-picks",
-    "SeekingAlpha": "https://api.mock-seekingalpha.com/top-picks",
-    "MarketWatch": "https://api.mock-marketwatch.com/top-stocks",
-    "YahooFinance": "https://api.mock-yahoo.com/top-stocks",
-    "TipRanks": "https://api.mock-tipranks.com/top-stocks",
-}
-
-# --- FUNCTION TO FETCH NEWS ---
-def fetch_news(source_name, url):
-    try:
-        resp = requests.get(url, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-        return data.get("top_stocks", [])
-    except Exception as e:
-        bot.send_message(chat_id=TELEGRAM_CHAT_ID,
-                         text=f"⚠️ Failed to fetch {source_name}: {e}")
-        return []
-
-# --- COLLECT SIGNALS ---
 signals = []
 
-for source, url in NEWS_SOURCES.items():
-    top_stocks = fetch_news(source, url)
-    for stock in top_stocks:
-        if stock["ticker"] in tickers:
-            # Example TP/SL calculation
-            price = stock.get("price", 0.0)
-            signals.append({
-                "Ticker": stock["ticker"],
-                "Source": source,
-                "Price": price,
-                "TP": price * 1.05 if price else 0.0,
-                "SL": price * 0.95 if price else 0.0
-            })
+# Simple scoring logic (placeholder for AI/momentum later)
+for ticker in df["Ticker"]:
+    score = round(np.random.rand(), 2)
+    if score > 0.7:
+        action = "BUY"
+    elif score < 0.3:
+        action = "SELL"
+    else:
+        action = "HOLD"
+    signals.append({"Ticker": ticker, "Action": action, "Score": score})
 
-# --- CHATGPT SANITY CHECK ---
-def chatgpt_sanity_check(signal):
+signals_df = pd.DataFrame(signals)
+
+# Save signals
+os.makedirs("signals", exist_ok=True)
+signals_file = f"signals/trading_signals_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+signals_df.to_csv(signals_file, index=False)
+
+# =========================
+# NEWS SOURCES
+# =========================
+os.makedirs("news", exist_ok=True)
+news_data = {}
+
+# 1. Yahoo Finance (HTML scrape fallback)
+for ticker in df["Ticker"]:
     try:
-        # Simple placeholder: replace with OpenAI API call if needed
-        return f"✅ {signal['Ticker']} sanity check passed"
+        url = f"https://finance.yahoo.com/quote/{ticker}"
+        r = requests.get(url, timeout=5)
+        news_data[f"Yahoo_{ticker}"] = r.text[:500] if r.status_code == 200 else "No news"
     except Exception as e:
-        return f"⚠️ {signal['Ticker']} sanity check failed: {e}"
+        news_data[f"Yahoo_{ticker}"] = f"Error: {e}"
 
-# --- BUILD MESSAGE ---
-if signals:
-    messages = []
-    for sig in signals:
-        sanity = chatgpt_sanity_check(sig)
-        messages.append(f"💹 {sig['Ticker']} (BUY) from {sig['Source']}\n"
-                        f"Price: {sig['Price']}, TP: {sig['TP']}, SL: {sig['SL']}\n"
-                        f"{sanity}\n")
-    final_message = f"🕒 Signals for {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}:\n\n"
-    final_message += "\n".join(messages)
-else:
-    final_message = f"⚠️ No signals found for your tickers at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+# 2. Barchart (requires free API key)
+BARCHART_API_KEY = os.getenv("BARCHART_API_KEY")
+if BARCHART_API_KEY:
+    for ticker in df["Ticker"]:
+        try:
+            url = f"https://marketdata.websol.barchart.com/getNews.json?apikey={BARCHART_API_KEY}&symbols={ticker}"
+            r = requests.get(url, timeout=5)
+            if r.status_code == 200:
+                news_data[f"Barchart_{ticker}"] = r.json()
+            else:
+                news_data[f"Barchart_{ticker}"] = "No news"
+        except Exception as e:
+            news_data[f"Barchart_{ticker}"] = f"Error: {e}"
 
-# --- SEND TELEGRAM ---
-try:
-    bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=final_message)
-except Exception as e:
-    print(f"❌ Failed to send Telegram message: {e}")
+# 3. Polygon.io
+POLYGON_API_KEY = os.getenv("POLYGON_API_KEY")
+if POLYGON_API_KEY:
+    for ticker in df["Ticker"]:
+        try:
+            url = f"https://api.polygon.io/v2/reference/news?ticker={ticker}&limit=3&apiKey={POLYGON_API_KEY}"
+            r = requests.get(url, timeout=5)
+            news_data[f"Polygon_{ticker}"] = r.json() if r.status_code == 200 else "No news"
+        except Exception as e:
+            news_data[f"Polygon_{ticker}"] = f"Error: {e}"
+
+# 4. Finnhub.io
+FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY")
+if FINNHUB_API_KEY:
+    for ticker in df["Ticker"]:
+        try:
+            url = f"https://finnhub.io/api/v1/company-news?symbol={ticker}&from=2024-01-01&to=2024-12-31&token={FINNHUB_API_KEY}"
+            r = requests.get(url, timeout=5)
+            news_data[f"Finnhub_{ticker}"] = r.json() if r.status_code == 200 else "No news"
+        except Exception as e:
+            news_data[f"Finnhub_{ticker}"] = f"Error: {e}"
+
+# 5. Alpha Vantage (free but limited)
+ALPHA_VANTAGE_KEY = os.getenv("ALPHA_VANTAGE_KEY")
+if ALPHA_VANTAGE_KEY:
+    for ticker in df["Ticker"]:
+        try:
+            url = f"https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers={ticker}&apikey={ALPHA_VANTAGE_KEY}"
+            r = requests.get(url, timeout=5)
+            news_data[f"AlphaVantage_{ticker}"] = r.json() if r.status_code == 200 else "No news"
+        except Exception as e:
+            news_data[f"AlphaVantage_{ticker}"] = f"Error: {e}"
+
+# Save news
+news_file = f"news/latest_news_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+with open(news_file, "w") as f:
+    json.dump(news_data, f, indent=2)
+
+# =========================
+# OPTIONAL: ChatGPT sanity check
+# =========================
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+sanity_summary = None
+if OPENAI_API_KEY:
+    try:
+        gpt_payload = {
+            "model": "gpt-4o-mini",
+            "messages": [
+                {"role": "system", "content": "You are a financial assistant. Summarize and sanity check stock signals."},
+                {"role": "user", "content": f"Signals: {signals}\nNews: {list(news_data.keys())[:5]} ..."}
+            ],
+            "max_tokens": 150
+        }
+        gpt_headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
+        gpt_response = requests.post("https://api.openai.com/v1/chat/completions",
+                                     headers=gpt_headers, json=gpt_payload, timeout=15)
+        if gpt_response.status_code == 200:
+            sanity_summary = gpt_response.json()["choices"][0]["message"]["content"]
+    except Exception as e:
+        sanity_summary = f"Sanity check error: {e}"
+
+# =========================
+# Telegram Alerts
+# =========================
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
+if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+    messages = [f"{row['Ticker']} → {row['Action']} (Score {row['Score']})" for _, row in signals_df.iterrows()]
+    text = "📈 Jackpot Bot Signals:\n" + "\n".join(messages)
+    if sanity_summary:
+        text += f"\n\n🤖 GPT Sanity Check:\n{sanity_summary}"
+
+    try:
+        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                      data={"chat_id": TELEGRAM_CHAT_ID, "text": text})
+    except Exception as e:
+        print(f"Telegram error: {e}")
+
+print(f"✅ Signals saved: {signals_file}")
+print(f"✅ News saved: {news_file}")
