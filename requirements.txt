@@ -1,8 +1,6 @@
-numpy
-yfinance
-python-telegram-bot
-openai
-feedparser
 pandas
+numpy
 requests
 beautifulsoup4
+lxml
+openai
