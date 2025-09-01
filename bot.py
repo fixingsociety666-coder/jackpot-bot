@@ -338,7 +338,7 @@ def main():
         snippets = {}
         # Yahoo (quote + headlines)
         try:
-            snippets["Yahoo"] = fetch_from_yahoo := fetch_from_yahoo_per_ticker(t) if True else ["Yahoo fetch skipped"]
+        snippets["Yahoo"] = fetch_from_yahoo_per_ticker(t)
         except Exception as e:
             snippets["Yahoo"] = [f"Yahoo error wrapper: {e}"]
 
