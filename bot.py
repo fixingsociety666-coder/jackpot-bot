@@ -334,28 +334,23 @@ def main():
 
     # 2) News fetching per ticker (call each source; continue on error)
     news_store = {}
-    for t in tickers:
-        snippets = {}
-        # Yahoo (quote + headlines)
-        try:
-            snippets["Yahoo"] = fetch_from_yahoo_per_ticker(t)
-        except Exception as e:
-            snippets["Yahoo"] = [f"Yahoo error wrapper: {e}"]
+    
+   from concurrent.futures import ThreadPoolExecutor
 
-        # Barchart
-        snippets["Barchart"] = fetch_from_barchart(t)
+def fetch_news_for_ticker(t):
+    snippets = {}
+    snippets["Yahoo"] = fetch_from_yahoo_per_ticker(t)
+    snippets["Barchart"] = fetch_from_barchart(t)
+    snippets["Polygon"] = fetch_from_polygon(t)
+    snippets["Finnhub"] = fetch_from_finnhub(t)
+    snippets["AlphaVantage"] = fetch_from_alpha_vantage(t)
+    snippets["MarketWatch"] = fetch_from_marketwatch(t)
+    # add other sources...
+    return t, snippets
 
-        # Polygon
-        snippets["Polygon"] = fetch_from_polygon(t)
-
-        # Finnhub
-        snippets["Finnhub"] = fetch_from_finnhub(t)
-
-        # AlphaVantage
-        snippets["AlphaVantage"] = fetch_from_alpha_vantage(t)
-
-        # MarketWatch (scrape)
-        snippets["MarketWatch"] = fetch_from_marketwatch(t)
+with ThreadPoolExecutor(max_workers=15) as executor:
+    results = list(executor.map(fetch_news_for_ticker, tickers))
+news_store = dict(results)
 
         # CNBC (scrape simple)
         try:
