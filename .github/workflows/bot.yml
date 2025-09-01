@@ -1,39 +1,27 @@
 name: Jackpot Bot
 
 on:
-  workflow_dispatch:
   schedule:
-    - cron: "0 */6 * * *"   # Runs every 6 hours
+    - cron: '0 6-21 * * 1-5'
+  workflow_dispatch:
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
         with:
-          python-version: "3.10"
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Run Jackpot Bot
+          python-version: 3.10
+      - run: python -m pip install --upgrade pip
+      - run: pip install -r requirements.txt
+      - run: python bot.py
         env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: |
-          python bot.py || echo "Python script failed"
-
-      - name: Upload signals & news
-        uses: actions/upload-artifact@v4
-        with:
-          name: jackpot-results
-          path: |
-            signals/
-            news/
-
+          BARCHART_API_KEY: ${{ secrets.BARCHART_API_KEY }}
+          POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+          ALPHA_VANTAGE_KEY: ${{ secrets.ALPHA_VANTAGE_KEY }}
+          APIFY_API_TOKEN: ${{ secrets.APIFY_API_TOKEN }}
