@@ -74,10 +74,6 @@ def safe_request_text(url, params=None, headers=None, timeout=8):
 # Forecast function
 # ---------------------------
 def forecast_trend(ticker, days_ahead=5):
-    """
-    Forecast next N days trend using linear regression on historical closing prices.
-    Returns: list of dicts: [{"day": 1, "forecast": price, "icon": "🟢/🔴/⚪"}, ...]
-    """
     try:
         data = yf.Ticker(ticker).history(period="60d")['Close']
         if len(data) < 10:
@@ -93,9 +89,9 @@ def forecast_trend(ticker, days_ahead=5):
         icons = []
         last_price = data.values[-1]
         for price in forecast_prices:
-            if price > last_price * 1.01:  # >1% increase
+            if price > last_price * 1.01:
                 icons.append("🟢")
-            elif price < last_price * 0.99:  # >1% decrease
+            elif price < last_price * 0.99:
                 icons.append("🔴")
             else:
                 icons.append("⚪")
@@ -377,8 +373,7 @@ def main():
     est_now = datetime.utcnow() - timedelta(hours=4)
     lines=[f"📊 Jackpot Bot run at {est_now.strftime('%Y-%m-%d %H:%M:%S EST')}\n"]
     final_signals_filtered=[f for f in final_signals if f["Bot"]["action"] in ["STRONG BUY","STRONG SELL"]]
-    order_priority={"STRONG BUY":0,"STRONG SELL":1}
-    final_signals_sorted=sorted(final_signals_filtered,key=lambda x: order_priority.get(x["Bot"]["action"],99))
+    final_signals_sorted=sorted(final_signals_filtered,key=lambda x:x["Bot"]["score"],reverse=True)
 
     if not final_signals_sorted:
         lines.append("No STRONG BUY or STRONG SELL signals this run.")
@@ -388,19 +383,28 @@ def main():
             bot=f["Bot"]
             price=f.get("Price")
             source=f.get("PriceSource")
-            icon="🟢" if bot["action"]=="STRONG BUY" else "🔴"
+            icon = "💹" if bot["action"]=="STRONG BUY" else "📉"
             price_str=f"${price:.2f} ({source})" if isinstance(price,(int,float)) else "Price N/A"
-            # Add forecast
-            forecast = forecast_trend(t)
-            forecast_str = " | ".join([f"{f['icon']}{f['forecast'] if f['forecast'] else 'N/A'}" for f in forecast])
+            forecast=forecast_trend(t)
+            forecast_str=" | ".join([f"{f['icon']}{f['forecast'] if f['forecast'] else 'N/A'}" for f in forecast])
+            first = forecast[0]['forecast']
+            last = forecast[-1]['forecast']
+            if first is not None and last is not None:
+                if last>first: overall_trend="📈 Uptrend"
+                elif last<first: overall_trend="📉 Downtrend"
+                else: overall_trend="➖ Neutral"
+            else: overall_trend="➖ Neutral"
             lines.append(
+                f"────────────\n"
                 f"{icon} {t} | {bot['action']} | Score: {bot['score']*100:.1f}% | "
                 f"Trailing: {bot['trailing_pct']}% | Offset: {bot['offset_pct']}% | {price_str}\n"
-                f"Forecast: {forecast_str}"
+                f"Forecast: {forecast_str}\n"
+                f"Trend: {overall_trend}"
             )
-    send_telegram("\n".join(lines))
+
+    text="\n".join(lines)
+    send_telegram(text)
+    print("✅ Bot run complete, Telegram sent.")
 
 if __name__=="__main__":
-    try: main()
-    except Exception as e:
-        send_telegram(f"🚨 Bot crashed: {e}\n{traceback.format_exc()}")
+    main()
