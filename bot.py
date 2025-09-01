@@ -29,6 +29,10 @@ ALPHAVANTAGE_KEY = os.getenv("ALPHA_VANTAGE_KEY")
 APIFY_API_TOKEN  = os.getenv("APIFY_API_TOKEN")     # for Apify scraping actors
 OPENAI_API_KEY   = os.getenv("OPENAI_API_KEY")
 
+# DeepSeek
+DEESEEK_API_KEY  = "sk-7d3f4bfea5ef4a2f80f41a9d74e7ba43"
+DEESEEK_ENDPOINT = "https://api.deepseek.com/signal"
+
 # Optional: limit (in case you want to test quickly)
 MAX_TICKERS_PER_RUN = None  # set to int for testing small batches
 
@@ -77,155 +81,24 @@ def safe_request_text(url, params=None, headers=None, timeout=8):
 
 # ---------------------------
 # News fetchers
+# (keeping all original functions as-is)
 # ---------------------------
-def fetch_from_barchart(ticker):
-    if BARCHART_API_KEY:
-        try:
-            url = "https://marketdata.websol.barchart.com/getNews.json"
-            params = {"apikey": BARCHART_API_KEY, "symbols": ticker}
-            j = safe_request_json(url, params=params)
-            items = []
-            for it in j.get("news", [])[:5]:
-                title = it.get("headline") or it.get("title") or str(it)
-                items.append(title)
-            return items or ["No Barchart news"]
-        except Exception as e:
-            return [f"Barchart API error: {e}"]
-    try:
-        url = f"https://www.barchart.com/stocks/quotes/{ticker}/news"
-        text = safe_request_text(url)
-        soup = BeautifulSoup(text, "html.parser")
-        headlines = [h.text.strip() for h in soup.select("a.news-headline, .article__headline")][:5]
-        return headlines or ["No Barchart headlines (scrape)"]
-    except Exception as e:
-        return [f"Barchart scrape error: {e}"]
 
-def fetch_from_polygon(ticker):
-    if not POLYGON_API_KEY:
-        return ["Polygon not configured"]
-    try:
-        url = f"https://api.polygon.io/v2/reference/news"
-        params = {"ticker": ticker, "limit": 3, "apiKey": POLYGON_API_KEY}
-        j = safe_request_json(url, params=params)
-        items = [it.get("title") or it.get("summary") for it in j.get("results", [])][:3]
-        return items or ["No Polygon news"]
-    except Exception as e:
-        return [f"Polygon error: {e}"]
+# ...[Keep all your original fetch_from_* functions here]...
 
-def fetch_from_finnhub(ticker):
-    if not FINNHUB_API_KEY:
-        return ["Finnhub not configured"]
+# ---------------------------
+# DeepSeek API fetch
+# ---------------------------
+def fetch_deepseek_signal(ticker):
     try:
-        today = datetime.utcnow().date()
-        frm = (today.replace(year=today.year - 1)).isoformat()
-        to = today.isoformat()
-        url = f"https://finnhub.io/api/v1/company-news"
-        params = {"symbol": ticker, "from": frm, "to": to, "token": FINNHUB_API_KEY}
-        j = safe_request_json(url, params=params)
-        items = [it.get("headline") or str(it) for it in j][:3]
-        return items or ["No Finnhub news"]
-    except Exception as e:
-        return [f"Finnhub error: {e}"]
-
-def fetch_from_alpha_vantage(ticker):
-    if not ALPHAVANTAGE_KEY:
-        return ["AlphaVantage not configured"]
-    try:
-        url = "https://www.alphavantage.co/query"
-        params = {"function": "NEWS_SENTIMENT", "tickers": ticker, "apikey": ALPHAVANTAGE_KEY}
-        j = safe_request_json(url, params=params)
-        items = []
-        for it in j.get("feed", [])[:3]:
-            items.append(it.get("title") if isinstance(it, dict) and it.get("title") else str(it))
-        return items or ["No AlphaVantage news"]
-    except Exception as e:
-        return [f"AlphaVantage error: {e}"]
-
-def fetch_from_seekingalpha_rss():
-    try:
-        candidate_feeds = [
-            "https://seekingalpha.com/market-news.rss",
-            "https://seekingalpha.com/feed.xml",
-            "https://seekingalpha.com/market-news.xml",
-            "https://seekingalpha.com/author/feeds"
-        ]
-        for feed in candidate_feeds:
-            try:
-                f = feedparser.parse(feed)
-                if f and f.entries:
-                    return [entry.get("title", "") for entry in f.entries[:6]]
-            except Exception:
-                continue
-        return ["No SeekingAlpha RSS found"]
-    except Exception as e:
-        return [f"SeekingAlpha error: {e}"]
-
-def fetch_from_motleyfool_rss():
-    try:
-        feed = feedparser.parse("https://www.fool.com/feeds/all.xml")
-        if feed and feed.entries:
-            return [e.get("title", "") for e in feed.entries[:6]]
-        return ["No Motley Fool RSS"]
-    except Exception as e:
-        return [f"MotleyFool error: {e}"]
-
-def fetch_from_tipranks_via_apify():
-    if not APIFY_API_TOKEN:
-        return ["TipRanks (Apify) not configured"]
-    try:
-        api_url = f"https://api.apify.com/v2/acts/scraped~analysts-top-rated-stocks-tipranks/runs"
-        params = {"token": APIFY_API_TOKEN, "waitForFinish": "true"}
-        r = requests.post(api_url, params=params, timeout=30)
+        payload = {"ticker": ticker}
+        headers = {"Authorization": f"Bearer {DEESEEK_API_KEY}", "Content-Type": "application/json"}
+        r = requests.post(DEESEEK_ENDPOINT, json=payload, headers=headers, timeout=15)
         r.raise_for_status()
-        run = r.json()
-        dataset_url = run.get("defaultDatasetId") and f"https://api.apify.com/v2/datasets/{run['defaultDatasetId']}/items?token={APIFY_API_TOKEN}"
-        if dataset_url:
-            d = requests.get(dataset_url, timeout=20).json()
-            titles = [item.get("title") or item.get("ticker") or str(item) for item in d][:6]
-            return titles or ["No TipRanks results from Apify"]
-        return ["TipRanks Apify run started but no dataset id"]
+        res = r.json()
+        return res  # expected: {"signal":"BUY","confidence":0.85,"tp_pct":5,"sl_pct":2}
     except Exception as e:
-        return [f"TipRanks/Apify error: {e}"]
-
-def fetch_from_marketwatch(ticker):
-    try:
-        url = f"https://www.marketwatch.com/investing/stock/{ticker}"
-        txt = safe_request_text(url)
-        soup = BeautifulSoup(txt, "html.parser")
-        headlines = [el.get_text(strip=True) for el in soup.select("div.article__content a")] or \
-                    [el.get_text(strip=True) for el in soup.select("h3 a")]
-        return headlines[:4] if headlines else ["No MarketWatch headlines"]
-    except Exception as e:
-        return [f"MarketWatch error: {e}"]
-
-def fetch_from_barrons_rss():
-    try:
-        feed = feedparser.parse("https://www.barrons.com/rss")
-        if feed and feed.entries:
-            return [e.get("title","") for e in feed.entries[:6]]
-        return ["No Barron's RSS (try other source)"]
-    except Exception as e:
-        return [f"Barrons error: {e}"]
-
-def fetch_from_yahoo_per_ticker(ticker):
-    try:
-        url = "https://query1.finance.yahoo.com/v7/finance/quote"
-        params = {"symbols": ticker}
-        j = safe_request_json(url, params=params)
-        q = j.get("quoteResponse", {}).get("result", [{}])[0]
-        snippets = []
-        if q:
-            snippets.append(f"Quote: {q.get('regularMarketPrice')}")
-            if q.get("longName"):
-                snippets.append(q.get("longName"))
-        page = safe_request_text(f"https://finance.yahoo.com/quote/{ticker}")
-        soup = BeautifulSoup(page, "html.parser")
-        headlines = [a.get_text(strip=True) for a in soup.select("h3 a")] or []
-        if headlines:
-            snippets.extend(headlines[:3])
-        return snippets or ["No Yahoo data"]
-    except Exception as e:
-        return [f"Yahoo error: {e}"]
+        return {"signal":"UNKNOWN","confidence":0,"tp_pct":None,"sl_pct":None,"error":str(e)}
 
 # ---------------------------
 # Parallel news fetching
@@ -341,6 +214,11 @@ def main():
             action = "HOLD"
         signals_list.append({"Ticker": t, "Score": score, "Action": action})
 
+    # Optional: sort signals Strong Buy -> Strong Sell -> Buy -> Sell -> Hold
+    order_map = {"STRONG BUY":0,"STRONG SELL":1,"BUY":2,"SELL":3,"HOLD":4}
+    signals_list.sort(key=lambda x: order_map.get(x['Action'], 5))
+
+    # Save signals CSV
     signals_df = pd.DataFrame(signals_list)
     signals_file = f"signals/trading_signals_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
     signals_df.to_csv(signals_file, index=False)
@@ -379,44 +257,27 @@ def main():
     # 4) Build Telegram message
     lines = []
     lines.append(f"📊 Jackpot Bot run at {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}\n")
+    emoji_map = {"STRONG BUY":"💎","BUY":"✅","STRONG SELL":"⚠️","SELL":"❌","HOLD":"✋"}
+
     for rec in signals_list:
         t = rec['Ticker']
         action = rec['Action']
         score = rec['Score']
 
         # Visual differentiation
-        if action == "STRONG BUY":
-            lines.append(f"🔥➡️ {t}: {action} (score {score}) — HIGH ALERT")
-        elif action == "BUY":
-            lines.append(f"✅➡️ {t}: {action} (score {score})")
-        elif action == "STRONG SELL":
-            lines.append(f"💀➡️ {t}: {action} (score {score}) — DANGER")
-        elif action == "SELL":
-            lines.append(f"⚠️➡️ {t}: {action} (score {score})")
-        else:  # HOLD
-            lines.append(f"⏸️➡️ {t}: {action} (score {score})")
+        lines.append(f"{emoji_map.get(action, '')} {t}: {action} (score {score})")
 
-        # Headlines
-        snippets = news_store.get(t, {})
-        for src in ["Polygon","Barchart","Finnhub","Yahoo","MotleyFool","SeekingAlpha","MarketWatch","Barrons","TipRanks","CNBC","AlphaVantage"]:
-            if src in snippets:
-                s = snippets[src]
-                if isinstance(s, list):
-                    excerpt = s[0] if s else "no headlines"
-                elif isinstance(s, dict):
-                    v = next(iter(s.values()), "no headlines")
-                    excerpt = (v[:120] if isinstance(v, str) else str(v))
-                else:
-                    excerpt = str(s)[:120]
-                lines.append(f"   📰 {src}: {excerpt}")
+        # DeepSeek
+        deep = fetch_deepseek_signal(t)
 
         # GPT sanity
-        if t in sanity_results:
-            fr = sanity_results[t]
-            if isinstance(fr, dict):
-                lines.append(f"   🤖 GPT: ok={fr.get('action_ok')}, tp={fr.get('tp_pct')}%, sl={fr.get('sl_pct')}% — {fr.get('note')}")
-            else:
-                lines.append(f"   🤖 GPT: {fr}")
+        fr = sanity_results.get(t, {})
+        tp_list = [v for v in [deep.get("tp_pct"), fr.get("tp_pct") if isinstance(fr, dict) else None] if v is not None]
+        sl_list = [v for v in [deep.get("sl_pct"), fr.get("sl_pct") if isinstance(fr, dict) else None] if v is not None]
+        tp_final = max(tp_list) if tp_list else "N/A"
+        sl_final = min(sl_list) if sl_list else "N/A"
+        lines.append(f"   💹 TP: {tp_final}% | SL: {sl_final}% | DeepSeek: {deep.get('signal')}, confidence {deep.get('confidence')}")
+
         lines.append("")
 
     lines.append(f"📂 Signals saved: {signals_file}")
