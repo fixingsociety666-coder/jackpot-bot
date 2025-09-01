@@ -1,7 +1,6 @@
-numpy==1.26.4
 pandas==2.1.1
-yfinance==0.2.44
-python-telegram-bot==20.3
 requests==2.31.0
+python-telegram-bot==20.8
 openai==1.0.0
 feedparser==6.0.10
+yfinance==0.2.44
