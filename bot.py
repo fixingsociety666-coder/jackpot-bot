@@ -335,7 +335,7 @@ def main():
     # 2) News fetching per ticker (call each source; continue on error)
     news_store = {}
     
-   from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 
 def fetch_news_for_ticker(t):
     snippets = {}
