@@ -1,70 +1,90 @@
+# bot.py
 import os
-import feedparser
-import yfinance as yf
+import requests
 from telegram import Bot
 
-# Environment variables
+# Telegram setup
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-
 bot = Bot(token=TELEGRAM_TOKEN)
 
-# List of news RSS feeds / sources
-NEWS_SOURCES = {
-    "Seeking Alpha": "https://seekingalpha.com/market-news.rss",
-    "Motley Fool": "https://www.fool.com/feeds/all.xml",
-    "MarketWatch": "https://www.marketwatch.com/rss/topstories",
-    "Barchart": "https://www.barchart.com/rss/top-stocks.xml",
-    "TipsRank": "https://www.tipsranks.com/rss",
-    "Barron's": "https://www.barrons.com/xml/rss/1_2.xml",
-    "Yahoo Finance": "https://feeds.finance.yahoo.com/rss/2.0/headline?s=yhoo&region=US&lang=en-US"
-}
+def send_telegram(message):
+    try:
+        bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+    except Exception as e:
+        print(f"Failed to send Telegram message: {e}")
 
-# Function to fetch latest news and extract stock symbols
-def fetch_stock_signals():
-    signals = []
-    for source_name, rss_url in NEWS_SOURCES.items():
-        feed = feedparser.parse(rss_url)
-        for entry in feed.entries[:5]:  # Get top 5 articles per source
-            title = entry.get("title", "")
-            link = entry.get("link", "")
-            # Extract ticker from title using yfinance (very basic)
-            words = title.split()
-            for word in words:
-                if word.isupper() and len(word) <= 5:
-                    try:
-                        stock = yf.Ticker(word)
-                        price = stock.info.get("regularMarketPrice", 0)
-                        signals.append({
-                            "source": source_name,
-                            "ticker": word,
-                            "title": title,
-                            "link": link,
-                            "price": price,
-                            "tp": round(price * 1.05, 2) if price else 0.0,  # Take Profit 5% above
-                            "sl": round(price * 0.97, 2) if price else 0.0   # Stop Loss 3% below
-                        })
-                    except:
-                        continue
-    return signals
+# Functions to fetch top stock picks from each source
+def fetch_seeking_alpha():
+    try:
+        # Replace this with actual fetching logic
+        # Example placeholder data
+        return [{"symbol": "AAPL", "name": "Apple Inc.", "price": 180.5, "take_profit": 200, "stop_loss": 170, "source": "Seeking Alpha"}]
+    except Exception as e:
+        send_telegram(f"⚠️ Error fetching Seeking Alpha data: {e}")
+        return []
 
-# Send signals to Telegram
-def send_telegram_signals(signals):
-    for s in signals:
-        message = (
-            f"💹 {s['source']} Signal (BUY)\n"
-            f"{s['ticker']} - {s['title']}\n"
-            f"Link: {s['link']}\n"
-            f"Price: {s['price']}, TP: {s['tp']}, SL: {s['sl']}"
-        )
-        try:
-            bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
-        except Exception as e:
-            print(f"Error sending Telegram message: {e}")
+def fetch_motley_fool():
+    try:
+        return [{"symbol": "MSFT", "name": "Microsoft Corp.", "price": 350, "take_profit": 380, "stop_loss": 330, "source": "Motley Fool"}]
+    except Exception as e:
+        send_telegram(f"⚠️ Error fetching Motley Fool data: {e}")
+        return []
 
-if __name__ == "__main__":
-    stock_signals = fetch_stock_signals()
-    if stock_signals:
-        send_telegram_signals(stock_signals)
-    else:
-        print("No signals found.")
+def fetch_tipsrank():
+    try:
+        return [{"symbol": "TSLA", "name": "Tesla Inc.", "price": 720, "take_profit": 780, "stop_loss": 680, "source": "TipsRank"}]
+    except Exception as e:
+        send_telegram(f"⚠️ Error fetching TipsRank data: {e}")
+        return []
+
+def fetch_marketwatch():
+    try:
+        return [{"symbol": "NVDA", "name": "NVIDIA Corp.", "price": 600, "take_profit": 650, "stop_loss": 570, "source": "MarketWatch"}]
+    except Exception as e:
+        send_telegram(f"⚠️ Error fetching MarketWatch data: {e}")
+        return []
+
+def fetch_yahoo():
+    try:
+        return [{"symbol": "AMZN", "name": "Amazon.com Inc.", "price": 145, "take_profit": 160, "stop_loss": 135, "source": "Yahoo Finance"}]
+    except Exception as e:
+        send_telegram(f"⚠️ Error fetching Yahoo Finance data: {e}")
+        return []
+
+def fetch_polygon():
+    try:
+        return [{"symbol": "GOOGL", "name": "Alphabet Inc.", "price": 2800, "take_profit": 3000, "stop_loss": 2700, "source": "Polygon.io"}]
+    except Exception as e:
+        send_telegram(f"⚠️ Error fetching Polygon.io data: {e}")
+        return []
+
+def fetch_finnhub():
+    try:
+        return [{"symbol": "NFLX", "name": "Netflix Inc.", "price": 500, "take_profit": 550, "stop_loss": 480, "source": "Finnhub"}]
+    except Exception as e:
+        send_telegram(f"⚠️ Error fetching Finnhub data: {e}")
+        return []
+
+# Main aggregation
+all_signals = (
+    fetch_seeking_alpha() +
+    fetch_motley_fool() +
+    fetch_tipsrank() +
+    fetch_marketwatch() +
+    fetch_yahoo() +
+    fetch_polygon() +
+    fetch_finnhub()
+)
+
+if not all_signals:
+    send_telegram("⚠️ No stock signals retrieved from any source.")
+
+# Send Telegram messages for each signal
+for signal in all_signals:
+    message = f"💹 {signal['name']} ({signal['symbol']})\n"
+    message += f"Source: {signal['source']}\n"
+    message += f"Price: {signal['price']}, TP: {signal['take_profit']}, SL: {signal['stop_loss']}"
+    send_telegram(message)
+
+print("All signals processed.")
