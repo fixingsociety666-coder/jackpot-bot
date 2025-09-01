@@ -6,3 +6,4 @@ lxml
 openai
 feedparser
 yfinance
+scikit-learn
