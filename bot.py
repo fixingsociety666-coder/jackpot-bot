@@ -255,18 +255,54 @@ def bot_fallback_score_and_trailing_offset(headlines):
     return {"score": score,"action": action,"trailing_pct": trailing_pct,"offset_pct": offset_pct}
 
 # ---------------------------
-# Yahoo live price
+# Multi-source live price
 # ---------------------------
-def get_live_price_yahoo(ticker):
+def get_live_price_multi_source(ticker):
+    """
+    Try multiple sources in order and return the first valid price with its source.
+    Sources: MarketWatch, Yahoo, Google Finance (multi-exchange)
+    """
+    ticker = ticker.strip().upper()
+    
+    # 1. MarketWatch
+    try:
+        url = f"https://www.marketwatch.com/investing/stock/{ticker}"
+        txt = safe_request_text(url)
+        soup = BeautifulSoup(txt, "html.parser")
+        price_tag = soup.select_one('bg-quote.value, h2.intraday__price span')
+        if price_tag:
+            price_str = price_tag.get_text(strip=True).replace(',','')
+            return float(price_str), "MarketWatch"
+    except Exception as e:
+        print(f"DEBUG: MarketWatch price error for {ticker}: {e}")
+
+    # 2. Yahoo Finance
     try:
         url="https://query1.finance.yahoo.com/v7/finance/quote"
         params={"symbols":ticker}
         j=safe_request_json(url,params=params)
         q=j.get("quoteResponse",{}).get("result",[{}])[0]
         price=q.get("regularMarketPrice")
-        return float(price) if price is not None else None
-    except Exception:
-        return None
+        if price is not None:
+            return float(price), "Yahoo"
+    except Exception as e:
+        print(f"DEBUG: Yahoo price error for {ticker}: {e}")
+
+    # 3. Google Finance (multi-exchange)
+    try:
+        exchanges = ["NASDAQ", "NYSE", "OTC"]
+        for ex in exchanges:
+            url = f"https://www.google.com/finance/quote/{ticker}:{ex}"
+            txt = safe_request_text(url)
+            soup = BeautifulSoup(txt, "html.parser")
+            price_tag = soup.select_one("div.YMlKec.fxKbKc")
+            if price_tag:
+                price_str = price_tag.get_text(strip=True).replace(',','').replace('$','')
+                return float(price_str), f"Google Finance ({ex})"
+    except Exception as e:
+        print(f"DEBUG: Google Finance price error for {ticker}: {e}")
+
+    return None, None
 
 # ---------------------------
 # Main
@@ -305,8 +341,8 @@ def main():
             else: headlines_flat.append(str(arr))
 
         bot=bot_fallback_score_and_trailing_offset(headlines_flat)
-        price=get_live_price_yahoo(t)
-        final_signals.append({"Ticker":t,"Price":price,"Bot":bot,"Headlines":headlines_flat[:20]})
+        price, price_source = get_live_price_multi_source(t)
+        final_signals.append({"Ticker":t,"Price":price,"PriceSource":price_source,"Bot":bot,"Headlines":headlines_flat[:20]})
 
     # Build Telegram
     lines=[f"📊 Jackpot Bot run at {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}\n"]
@@ -321,8 +357,9 @@ def main():
             t=f["Ticker"]
             bot=f["Bot"]
             price=f.get("Price")
+            source=f.get("PriceSource")
             icon="🟢" if bot["action"]=="STRONG BUY" else "🔴"
-            price_str=f"${price:.2f}" if isinstance(price,(int,float)) else "Price N/A"
+            price_str=f"${price:.2f} ({source})" if isinstance(price,(int,float)) else "Price N/A"
             lines.append(f"{icon} {t} — {bot['action']} (bot score {bot['score']}) — {price_str}")
             lines.append(f"   🛠 Bot → Trailing: {bot['trailing_pct']}% | Offset: {bot['offset_pct']}%")
             lines.append("")
