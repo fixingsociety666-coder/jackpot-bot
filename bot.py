@@ -19,6 +19,8 @@ from sklearn.linear_model import LinearRegression
 TICKER_CSV = "tickers.csv"
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 BARCHART_API_KEY = os.getenv("BARCHART_API_KEY")
 POLYGON_API_KEY  = os.getenv("POLYGON_API_KEY")
 FINNHUB_API_KEY  = os.getenv("FINNHUB_API_KEY")
@@ -26,7 +28,6 @@ ALPHAVANTAGE_KEY = os.getenv("ALPHAVANTAGE_KEY")
 APIFY_API_TOKEN  = os.getenv("APIFY_API_TOKEN")
 MAX_TICKERS_PER_RUN = None
 TELEGRAM_MAX = 3900
-MAX_WORKERS = 12
 
 # ---------------------------
 # Utilities
@@ -68,28 +69,182 @@ def safe_request_text(url, params=None, headers=None, timeout=8):
     return resp.text
 
 # ---------------------------
-# Forecast function
+# Forecast function (trend line icons based on slope)
 # ---------------------------
 def forecast_trend(ticker, days_ahead=5):
+    """
+    Generates a Google-style trend line forecast for the next 'days_ahead' days.
+    Uses historical close prices and linear regression to project trends.
+    """
     try:
         data = yf.Ticker(ticker).history(period="60d")['Close']
         if len(data) < 10:
-            return [{"day": i+1, "forecast": None, "icon": "⚪"} for i in range(days_ahead)]
+            return [{"day": i+1, "forecast": None, "icon": "➖⚪"} for i in range(days_ahead)]
+
+        # Linear regression for forecasting
         X = np.arange(len(data)).reshape(-1, 1)
         y = data.values
         model = LinearRegression().fit(X, y)
         future_X = np.arange(len(data), len(data)+days_ahead).reshape(-1, 1)
         forecast_prices = model.predict(future_X)
+
+        # Compute slope-based trend icons
         icons = []
-        last_price = data.values[-1]
+        prev_price = data.values[-1]
         for price in forecast_prices:
-            if price > last_price * 1.01: icons.append("🟢")
-            elif price < last_price * 0.99: icons.append("🔴")
-            else: icons.append("⚪")
-            last_price = price
+            slope_pct = (price - prev_price) / prev_price * 100
+            if slope_pct > 1.5: icons.append("📈🟢")      # Strong uptrend
+            elif slope_pct > 0.3: icons.append("📈🟡")    # Mild uptrend
+            elif slope_pct < -1.5: icons.append("📉🔴")   # Strong downtrend
+            elif slope_pct < -0.3: icons.append("📉🟡")   # Mild downtrend
+            else: icons.append("➖⚪")                     # Neutral
+            prev_price = price
+
         return [{"day": i+1, "forecast": round(forecast_prices[i],2), "icon": icons[i]} for i in range(days_ahead)]
     except Exception:
-        return [{"day": i+1, "forecast": None, "icon": "⚪"} for i in range(days_ahead)]
+        return [{"day": i+1, "forecast": None, "icon": "➖⚪"} for i in range(days_ahead)]
+
+# ---------------------------
+# News fetchers (all sources including Google News)
+# ---------------------------
+def fetch_from_yahoo_per_ticker(ticker):
+    try:
+        url = "https://query1.finance.yahoo.com/v7/finance/quote"
+        params = {"symbols": ticker}
+        j = safe_request_json(url, params=params)
+        q = j.get("quoteResponse", {}).get("result", [{}])[0]
+        snippets = []
+        if q.get("longName"): snippets.append(q.get("longName"))
+        if q.get("regularMarketPrice") is not None: snippets.append(f"Price: {q.get('regularMarketPrice')}")
+        try:
+            page = safe_request_text(f"https://finance.yahoo.com/quote/{ticker}")
+            soup = BeautifulSoup(page, "html.parser")
+            headlines = [a.get_text(strip=True) for a in soup.select("h3 a")][:3]
+            snippets.extend(headlines)
+        except: pass
+        return snippets or ["No Yahoo data"]
+    except Exception as e: return [f"Yahoo error: {e}"]
+
+def fetch_from_barchart(ticker):
+    try:
+        if BARCHART_API_KEY:
+            url = "https://marketdata.websol.barchart.com/getNews.json"
+            params = {"apikey": BARCHART_API_KEY, "symbols": ticker}
+            j = safe_request_json(url, params=params)
+            return [it.get("headline") or str(it) for it in j.get("news", [])[:5]] or ["No Barchart news"]
+        url = f"https://www.barchart.com/stocks/quotes/{ticker}/news"
+        text = safe_request_text(url)
+        soup = BeautifulSoup(text, "html.parser")
+        headlines = [h.get_text(strip=True) for h in soup.select("a.news-headline, .article__headline")][:5]
+        return headlines or ["No Barchart headlines (scrape)"]
+    except Exception as e: return [f"Barchart error: {e}"]
+
+def fetch_from_polygon(ticker):
+    if not POLYGON_API_KEY: return ["Polygon not configured"]
+    try:
+        url = "https://api.polygon.io/v2/reference/news"
+        params = {"ticker": ticker, "limit": 3, "apiKey": POLYGON_API_KEY}
+        j = safe_request_json(url, params=params)
+        return [it.get("title") or it.get("summary") for it in j.get("results", [])][:3] or ["No Polygon news"]
+    except Exception as e: return [f"Polygon error: {e}"]
+
+def fetch_from_finnhub(ticker):
+    if not FINNHUB_API_KEY: return ["Finnhub not configured"]
+    try:
+        today = datetime.utcnow().date()
+        frm = (today.replace(year=today.year-1)).isoformat()
+        to = today.isoformat()
+        url = "https://finnhub.io/api/v1/company-news"
+        params = {"symbol": ticker, "from": frm, "to": to, "token": FINNHUB_API_KEY}
+        j = safe_request_json(url, params=params)
+        return [it.get("headline") or str(it) for it in j][:3] or ["No Finnhub news"]
+    except Exception as e: return [f"Finnhub error: {e}"]
+
+def fetch_from_alpha_vantage(ticker):
+    if not ALPHAVANTAGE_KEY: return ["AlphaVantage not configured"]
+    try:
+        url = "https://www.alphavantage.co/query"
+        params = {"function": "NEWS_SENTIMENT", "tickers": ticker, "apikey": ALPHAVANTAGE_KEY}
+        j = safe_request_json(url, params=params)
+        return [it.get("title") if isinstance(it, dict) and it.get("title") else str(it) for it in j.get("feed", [])[:3]] or ["No AlphaVantage news"]
+    except Exception as e: return [f"AlphaVantage error: {e}"]
+
+def fetch_from_marketwatch(ticker):
+    try:
+        url = f"https://www.marketwatch.com/investing/stock/{ticker}"
+        txt = safe_request_text(url)
+        soup = BeautifulSoup(txt, "html.parser")
+        headlines = [el.get_text(strip=True) for el in soup.select("div.article__content a")] or [el.get_text(strip=True) for el in soup.select("h3 a")]
+        return headlines[:4] if headlines else ["No MarketWatch headlines"]
+    except Exception as e: return [f"MarketWatch error: {e}"]
+
+def fetch_from_google_news(ticker):
+    try:
+        query = f"{ticker} stock"
+        url = f"https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en"
+        feed = feedparser.parse(url)
+        return [e.get("title","") for e in feed.entries[:5]] or ["No Google News found"]
+    except Exception as e:
+        return [f"Google News error: {e}"]
+
+def fetch_from_seekingalpha_rss():
+    try:
+        feeds = ["https://seekingalpha.com/market-news.rss","https://seekingalpha.com/feed.xml","https://seekingalpha.com/market-news.xml"]
+        for feed in feeds:
+            f = feedparser.parse(feed)
+            if f and getattr(f, "entries", None): return [e.get("title","") for e in f.entries[:6]]
+        return ["No SeekingAlpha RSS found"]
+    except Exception as e: return [f"SeekingAlpha error: {e}"]
+
+def fetch_from_motleyfool_rss():
+    try:
+        feed = feedparser.parse("https://www.fool.com/feeds/all.xml")
+        if feed and getattr(feed, "entries", None): return [e.get("title","") for e in feed.entries[:6]]
+        return ["No Motley Fool RSS"]
+    except Exception as e: return [f"MotleyFool error: {e}"]
+
+def fetch_from_barrons_rss():
+    try:
+        feed = feedparser.parse("https://www.barrons.com/rss")
+        if feed and getattr(feed, "entries", None): return [e.get("title","") for e in feed.entries[:6]]
+        return ["No Barron's RSS"]
+    except Exception as e: return [f"Barrons error: {e}"]
+
+def fetch_from_tipranks_via_apify():
+    if not APIFY_API_TOKEN: return ["TipRanks not configured"]
+    try:
+        url = "https://api.apify.com/v2/acts/scraped~analysts-top-rated-stocks-tipranks/runs"
+        params = {"token": APIFY_API_TOKEN, "waitForFinish": "true"}
+        r = requests.post(url, params=params, timeout=30)
+        r.raise_for_status()
+        run = r.json()
+        dataset_url = run.get("defaultDatasetId") and f"https://api.apify.com/v2/datasets/{run['defaultDatasetId']}/items?token={APIFY_API_TOKEN}"
+        if dataset_url:
+            d = requests.get(dataset_url, timeout=20).json()
+            return [item.get("title") or item.get("ticker") or str(item) for item in d][:6] or ["No TipRanks results"]
+        return ["TipRanks run started but no dataset id"]
+    except Exception as e: return [f"TipRanks/Apify error: {e}"]
+
+def fetch_news_for_ticker(ticker):
+    snippets = {}
+    snippets["Yahoo"] = fetch_from_yahoo_per_ticker(ticker)
+    snippets["Barchart"] = fetch_from_barchart(ticker)
+    snippets["Polygon"] = fetch_from_polygon(ticker)
+    snippets["Finnhub"] = fetch_from_finnhub(ticker)
+    snippets["AlphaVantage"] = fetch_from_alpha_vantage(ticker)
+    snippets["MarketWatch"] = fetch_from_marketwatch(ticker)
+    try:
+        url = f"https://www.cnbc.com/quotes/{ticker}"
+        txt = safe_request_text(url)
+        soup = BeautifulSoup(txt, "html.parser")
+        snippets["CNBC"] = [a.get_text(strip=True) for a in soup.select("a.Card-title")][:3] or ["No CNBC headlines"]
+    except Exception as e: snippets["CNBC"] = [f"CNBC error: {e}"]
+    snippets["GoogleNews"] = fetch_from_google_news(ticker)
+    snippets["SeekingAlpha"] = fetch_from_seekingalpha_rss()
+    snippets["MotleyFool"] = fetch_from_motleyfool_rss()
+    snippets["Barrons"] = fetch_from_barrons_rss()
+    snippets["TipRanks"] = fetch_from_tipranks_via_apify()
+    return ticker, snippets
 
 # ---------------------------
 # Bot scoring
@@ -127,7 +282,7 @@ def bot_score_with_tech(headlines, ticker):
     return {"score": score,"action": action,"trailing_pct": trailing_pct,"offset_pct": offset_pct}
 
 # ---------------------------
-# Multi-source live price
+# Live price multi-source
 # ---------------------------
 def get_live_price_multi_source(ticker):
     ticker = ticker.strip().upper()
@@ -154,147 +309,7 @@ def get_live_price_multi_source(ticker):
             price_tag = soup.select_one("div.YMlKec.fxKbKc")
             if price_tag: return float(price_tag.get_text(strip=True).replace(',','').replace('$','')), f"Google Finance ({ex})"
     except: pass
-    return None, None
-
-# ---------------------------
-# Fetch news + price in one go
-# ---------------------------
-def fetch_news_and_price(ticker):
-    snippets = {}
-    ticker = ticker.upper()
-    try:
-        # Yahoo
-        url = f"https://query1.finance.yahoo.com/v7/finance/quote"
-        params = {"symbols": ticker}
-        j = safe_request_json(url, params=params)
-        q = j.get("quoteResponse", {}).get("result", [{}])[0]
-        snippets["Yahoo"] = [q.get("longName") or "", f"Price: {q.get('regularMarketPrice')}" if q.get("regularMarketPrice") else ""]
-    except: snippets["Yahoo"] = ["No Yahoo data"]
-
-    # MarketWatch
-    try:
-        url = f"https://www.marketwatch.com/investing/stock/{ticker}"
-        txt = safe_request_text(url)
-        soup = BeautifulSoup(txt, "html.parser")
-        headlines = [el.get_text(strip=True) for el in soup.select("div.article__content a")][:4]
-        snippets["MarketWatch"] = headlines or ["No MarketWatch headlines"]
-    except: snippets["MarketWatch"] = ["MarketWatch error"]
-
-    # Google News
-    try:
-        url = f"https://news.google.com/rss/search?q={ticker}"
-        feed = feedparser.parse(url)
-        snippets["GoogleNews"] = [entry.get("title","") for entry in feed.entries[:5]] or ["No Google News"]
-    except: snippets["GoogleNews"] = ["Google News error"]
-
-    # Barchart
-    try:
-        if BARCHART_API_KEY:
-            url = "https://marketdata.websol.barchart.com/getNews.json"
-            params = {"apikey": BARCHART_API_KEY, "symbols": ticker}
-            j = safe_request_json(url, params=params)
-            snippets["Barchart"] = [it.get("headline") or str(it) for it in j.get("news", [])[:5]] or ["No Barchart news"]
-        else: snippets["Barchart"] = ["Barchart not configured"]
-    except: snippets["Barchart"] = ["Barchart error"]
-
-    # Polygon
-    try:
-        if POLYGON_API_KEY:
-            url = "https://api.polygon.io/v2/reference/news"
-            params = {"ticker": ticker, "limit": 3, "apiKey": POLYGON_API_KEY}
-            j = safe_request_json(url, params=params)
-            snippets["Polygon"] = [it.get("title") or it.get("summary") for it in j.get("results", [])][:3] or ["No Polygon news"]
-        else: snippets["Polygon"] = ["Polygon not configured"]
-    except: snippets["Polygon"] = ["Polygon error"]
-
-    # Finnhub
-    try:
-        if FINNHUB_API_KEY:
-            today = datetime.utcnow().date()
-            frm = (today.replace(year=today.year-1)).isoformat()
-            to = today.isoformat()
-            url = "https://finnhub.io/api/v1/company-news"
-            params = {"symbol": ticker, "from": frm, "to": to, "token": FINNHUB_API_KEY}
-            j = safe_request_json(url, params=params)
-            snippets["Finnhub"] = [it.get("headline") for it in j][:3] or ["No Finnhub news"]
-        else: snippets["Finnhub"] = ["Finnhub not configured"]
-    except: snippets["Finnhub"] = ["Finnhub error"]
-
-    # AlphaVantage
-    try:
-        if ALPHAVANTAGE_KEY:
-            url = "https://www.alphavantage.co/query"
-            params = {"function": "NEWS_SENTIMENT", "tickers": ticker, "apikey": ALPHAVANTAGE_KEY}
-            j = safe_request_json(url, params=params)
-            snippets["AlphaVantage"] = [it.get("title") for it in j.get("feed", [])[:3]] or ["No AlphaVantage news"]
-        else: snippets["AlphaVantage"] = ["AlphaVantage not configured"]
-    except: snippets["AlphaVantage"] = ["AlphaVantage error"]
-
-    # CNBC
-    try:
-        url = f"https://www.cnbc.com/quotes/{ticker}"
-        txt = safe_request_text(url)
-        soup = BeautifulSoup(txt, "html.parser")
-        snippets["CNBC"] = [a.get_text(strip=True) for a in soup.select("a.Card-title")][:3] or ["No CNBC headlines"]
-    except: snippets["CNBC"] = ["CNBC error"]
-
-    # SeekingAlpha RSS
-    try:
-        feeds = ["https://seekingalpha.com/market-news.rss","https://seekingalpha.com/feed.xml","https://seekingalpha.com/market-news.xml"]
-        for feed_url in feeds:
-            f = feedparser.parse(feed_url)
-            if f and getattr(f, "entries", None):
-                snippets["SeekingAlpha"] = [e.get("title","") for e in f.entries[:6]]
-                break
-        if "SeekingAlpha" not in snippets: snippets["SeekingAlpha"] = ["No SeekingAlpha RSS"]
-    except: snippets["SeekingAlpha"] = ["SeekingAlpha error"]
-
-    # MotleyFool RSS
-    try:
-        feed = feedparser.parse("https://www.fool.com/feeds/all.xml")
-        snippets["MotleyFool"] = [e.get("title","") for e in feed.entries[:6]] if getattr(feed,"entries",None) else ["No Motley Fool RSS"]
-    except: snippets["MotleyFool"] = ["MotleyFool error"]
-
-    # Barrons RSS
-    try:
-        feed = feedparser.parse("https://www.barrons.com/rss")
-        snippets["Barrons"] = [e.get("title","") for e in feed.entries[:6]] if getattr(feed,"entries",None) else ["No Barron's RSS"]
-    except: snippets["Barrons"] = ["Barrons error"]
-
-    # TipRanks via Apify
-    try:
-        if APIFY_API_TOKEN:
-            url = "https://api.apify.com/v2/acts/scraped~analysts-top-rated-stocks-tipranks/runs"
-            params = {"token": APIFY_API_TOKEN, "waitForFinish": "true"}
-            r = requests.post(url, params=params, timeout=30)
-            r.raise_for_status()
-            run = r.json()
-            dataset_url = run.get("defaultDatasetId") and f"https://api.apify.com/v2/datasets/{run['defaultDatasetId']}/items?token={APIFY_API_TOKEN}"
-            if dataset_url:
-                d = requests.get(dataset_url, timeout=20).json()
-                snippets["TipRanks"] = [item.get("title") or item.get("ticker") for item in d][:6] or ["No TipRanks results"]
-            else:
-                snippets["TipRanks"] = ["TipRanks run started but no dataset"]
-        else:
-            snippets["TipRanks"] = ["TipRanks not configured"]
-    except: snippets["TipRanks"] = ["TipRanks error"]
-
-    # Flatten headlines
-    headlines_flat = []
-    for arr in snippets.values():
-        if isinstance(arr,list): headlines_flat.extend([str(x) for x in arr if x])
-    bot = bot_score_with_tech(headlines_flat, ticker)
-
-    # Get live price
-    price, source = get_live_price_multi_source(ticker)
-
-    return {
-        "Ticker": ticker,
-        "Bot": bot,
-        "Headlines": headlines_flat[:20],
-        "Price": price,
-        "PriceSource": source
-    }
+    return None,None
 
 # ---------------------------
 # Main
@@ -306,43 +321,58 @@ def main():
         send_telegram(f"🚨 ERROR reading {TICKER_CSV}: {e}")
         return
 
-    tickers = list(df["Ticker"].dropna().astype(str).unique())
-    if MAX_TICKERS_PER_RUN: tickers = tickers[:MAX_TICKERS_PER_RUN]
+    tickers=list(df["Ticker"].dropna().astype(str).unique())
+    if MAX_TICKERS_PER_RUN: tickers=tickers[:MAX_TICKERS_PER_RUN]
 
-    os.makedirs("signals", exist_ok=True)
+    os.makedirs("signals",exist_ok=True)
+    os.makedirs("news",exist_ok=True)
 
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        results = list(executor.map(fetch_news_and_price, tickers))
+    news_store={}
+    with ThreadPoolExecutor(max_workers=12) as executor:
+        for t,snippets in executor.map(fetch_news_for_ticker,tickers):
+            news_store[t]=snippets
 
-    final_signals = [r for r in results if r["Bot"]["action"]=="STRONG BUY"]
-    final_signals_sorted = sorted(final_signals, key=lambda x:x["Bot"]["score"], reverse=True)[:4]
+    news_file=f"news/latest_news_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    with open(news_file,"w") as f: json.dump(news_store,f,indent=2)
+
+    final_signals=[]
+    for t in tickers:
+        snippets=news_store.get(t,{})
+        headlines_flat=[]
+        for src,arr in snippets.items():
+            if isinstance(arr,list): headlines_flat.extend([str(x) for x in arr[:6]])
+            elif isinstance(arr,dict): headlines_flat.extend([str(v) for v in list(arr.values())[:6]])
+            else: headlines_flat.append(str(arr))
+        bot=bot_score_with_tech(headlines_flat,t)
+        if bot["action"] != "STRONG BUY": continue
+        price, price_source = get_live_price_multi_source(t)
+        final_signals.append({"Ticker":t,"Price":price,"PriceSource":price_source,"Bot":bot,"Headlines":headlines_flat[:20]})
+
+    # Sort by score descending and take top 4
+    final_signals_sorted=sorted(final_signals,key=lambda x:x["Bot"]["score"],reverse=True)[:4]
 
     est_now = datetime.utcnow() - timedelta(hours=4)
-    lines = [f"📊 Jackpot Bot Top STRONG BUY Alerts at {est_now.strftime('%Y-%m-%d %H:%M:%S EST')}\n"]
+    lines=[f"📊 Jackpot Bot Top STRONG BUY Alerts at {est_now.strftime('%Y-%m-%d %H:%M:%S EST')}\n"]
 
     if not final_signals_sorted:
         lines.append("No STRONG BUY signals today.")
     else:
         for f in final_signals_sorted:
-            t = f["Ticker"]
-            bot = f["Bot"]
-            price = f.get("Price")
-            source = f.get("PriceSource")
-            price_str = f"${price:.2f} ({source})" if isinstance(price,(int,float)) else "Price N/A"
-            forecast = forecast_trend(t)
-            forecast_str = " | ".join([f"{f['icon']}{f['forecast'] if f['forecast'] else 'N/A'}" for f in forecast])
-            first = forecast[0]['forecast']
-            last = forecast[-1]['forecast']
-            overall_trend = "📈 Uptrend" if first and last and last>first else "📉 Downtrend" if first and last and last<first else "➖ Neutral"
+            t=f["Ticker"]
+            bot=f["Bot"]
+            price=f.get("Price")
+            source=f.get("PriceSource")
+            price_str=f"${price:.2f} ({source})" if isinstance(price,(int,float)) else "Price N/A"
+            forecast=forecast_trend(t)
+            forecast_str=" | ".join([f"{f['icon']}" for f in forecast])
             lines.append(
                 f"────────────\n"
                 f"🟢 {t} | {bot['action']} | Score: {bot['score']*100:.1f}% | "
                 f"Trailing: {bot['trailing_pct']}% | Offset: {bot['offset_pct']}% | {price_str}\n"
-                f"Forecast: {forecast_str}\n"
-                f"Trend: {overall_trend}"
+                f"Forecast (5-day trend): {forecast_str}"
             )
 
-    text = "\n".join(lines)
+    text="\n".join(lines)
     send_telegram(text)
     print("✅ Bot run complete, Telegram sent.")
 
